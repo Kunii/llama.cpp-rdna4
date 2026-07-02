@@ -462,6 +462,21 @@ typedef struct {
 } block_iso3_0;
 static_assert(sizeof(block_iso3_0) == sizeof(ggml_half) + QK_ISO3/4 + QK_ISO3/8, "wrong iso3_0 block size/padding");
 
+// PlanarQuant 4-bit: 2D Givens rotation + 4-bit nibble (same layout as turbo4)
+#define QK_PLANAR4 128
+#define NL_PLANAR4 8
+#define NL_PLANAR4_VEC 32
+#define QK_ISO4 128
+#define NL_ISO4 8
+#define NL_ISO4_VEC 32
+typedef struct {
+    ggml_half  norm;
+    ggml_half  rnorm;
+    uint8_t    qs[QK_PLANAR4 / 2];  // 64 bytes: nibble-packed 4-bit indices
+} block_planar4_0;
+static_assert(sizeof(block_planar4_0) == 2*sizeof(ggml_half) + QK_PLANAR4/2, "wrong planar4_0 block size/padding");
+typedef block_planar4_0 block_iso4_0;
+
 typedef struct {
     ggml_half d;
     uint16_t scales_h;

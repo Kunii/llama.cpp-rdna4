@@ -28,6 +28,17 @@ __device__ __forceinline__ uint8_t sr_quantize_3bit(float val, const float * mid
     return idx;
 }
 
+__device__ __forceinline__ uint8_t sr_quantize_4bit(float val, const float * centroids) {
+    uint8_t best = 0;
+    float best_d = fabsf(val - centroids[0]);
+    #pragma unroll
+    for (int i = 1; i < 16; i++) {
+        float d = fabsf(val - centroids[i]);
+        if (d < best_d) { best_d = d; best = i; }
+    }
+    return best;
+}
+
 // Planar3: F32[128] -> block_planar3_0
 __device__ void quantize_f32_planar3_block(const float * x, block_planar3_0 * dst) {
     float norm_sq = 0.0f;
@@ -62,7 +73,73 @@ __device__ void quantize_f32_planar3_block(const float * x, block_planar3_0 * ds
     dst->norm = __float2half(recon_norm > 1e-10f ? grp_norm / recon_norm : grp_norm);
 }
 
-// Iso3: F32[128] -> block_iso3_0 (quaternion rotation)
+// Planar4: F32[128] -> block_planar4_0 (Givens + 4-bit nibble)
+__device__ void quantize_f32_planar4_block(const float * x, block_planar4_0 * dst) {
+    float norm_sq = 0.0f;
+    float buf[128];
+    for (int j = 0; j < QK_PLANAR4; j++) {
+        buf[j] = x[j];
+        norm_sq += buf[j] * buf[j];
+    }
+    float grp_norm = sqrtf(norm_sq);
+    float inv_norm = grp_norm > 1e-10f ? 1.0f / grp_norm : 0.0f;
+    for (int j = 0; j < QK_PLANAR4; j++) buf[j] *= inv_norm;
+
+    float rotated[128];
+    for (int p = 0; p < 64; p++) {
+        float c = PI_COS[p], s = PI_SIN[p];
+        rotated[p*2]   = c * buf[p*2] - s * buf[p*2+1];
+        rotated[p*2+1] = s * buf[p*2] + c * buf[p*2+1];
+    }
+
+    for (int j = 0; j < 64; j++) dst->qs[j] = 0;
+    float recon_sq = 0.0f;
+    for (int j = 0; j < 128; j++) {
+        uint8_t idx = sr_quantize_4bit(rotated[j], PI_CENTROIDS_4BIT);
+        dst->qs[j/2] |= (idx & 0xF) << ((j%2)*4);
+        recon_sq += PI_CENTROIDS_4BIT[idx] * PI_CENTROIDS_4BIT[idx];
+    }
+
+    float recon_norm = sqrtf(recon_sq);
+    dst->norm = __float2half(recon_norm > 1e-10f ? grp_norm / recon_norm : grp_norm);
+    dst->rnorm = __float2half(0.0f);
+}
+
+// Iso4: F32[128] -> block_iso4_0 (quaternion + 4-bit nibble)
+__device__ void quantize_f32_iso4_block(const float * x, block_iso4_0 * dst) {
+    float norm_sq = 0.0f;
+    float buf[128];
+    for (int j = 0; j < QK_ISO4; j++) {
+        buf[j] = x[j];
+        norm_sq += buf[j] * buf[j];
+    }
+    float grp_norm = sqrtf(norm_sq);
+    float inv_norm = grp_norm > 1e-10f ? 1.0f / grp_norm : 0.0f;
+    for (int j = 0; j < QK_ISO4; j++) buf[j] *= inv_norm;
+
+    float rotated[128];
+    for (int g = 0; g < 32; g++) {
+        float qw = PI_QW[g], qx = PI_QX[g], qy = PI_QY[g], qz = PI_QZ[g];
+        float v0 = buf[g*4], v1 = buf[g*4+1], v2 = buf[g*4+2], v3 = buf[g*4+3];
+        rotated[g*4]   = qw*v0 - qx*v1 - qy*v2 - qz*v3;
+        rotated[g*4+1] = qw*v1 + qx*v0 + qy*v3 - qz*v2;
+        rotated[g*4+2] = qw*v2 - qx*v3 + qy*v0 + qz*v1;
+        rotated[g*4+3] = qw*v3 + qx*v2 - qy*v1 + qz*v0;
+    }
+
+    for (int j = 0; j < 64; j++) dst->qs[j] = 0;
+    float recon_sq = 0.0f;
+    for (int j = 0; j < 128; j++) {
+        uint8_t idx = sr_quantize_4bit(rotated[j], PI_CENTROIDS_4BIT);
+        dst->qs[j/2] |= (idx & 0xF) << ((j%2)*4);
+        recon_sq += PI_CENTROIDS_4BIT[idx] * PI_CENTROIDS_4BIT[idx];
+    }
+
+    float recon_norm = sqrtf(recon_sq);
+    dst->norm = __float2half(recon_norm > 1e-10f ? grp_norm / recon_norm : grp_norm);
+    dst->rnorm = __float2half(0.0f);
+}
+
 __device__ void quantize_f32_iso3_block(const float * x, block_iso3_0 * dst) {
     float norm_sq = 0.0f;
     float buf[128];
