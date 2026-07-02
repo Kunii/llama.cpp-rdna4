@@ -224,8 +224,8 @@ static constexpr __host__ __device__ tile_x_sizes mmq_get_dp4a_tile_x_sizes(ggml
 #define MMQ_MMA_TILE_X_K_Q3_K  (2*MMQ_TILE_NE_K + MMQ_TILE_NE_K/2                         + 4)
 #define MMQ_MMA_TILE_X_K_Q6_K  (2*MMQ_TILE_NE_K + MMQ_TILE_NE_K/QI6_K   + MMQ_TILE_NE_K/8 + 7)
 #if defined(MMQ_IU4_ENABLE)
-#define MMQ_MMA_TILE_X_K_IU4   (MMQ_TILE_NE_K + MMQ_TILE_NE_K/QI8_0 + 0)
-static_assert(MMQ_MMA_TILE_X_K_IU4 % 8 == 4, "Wrong padding for IU4. 36 %% 8 = 4.");
+#define MMQ_MMA_TILE_X_K_IU4   (2*MMQ_TILE_NE_K + 2*MMQ_TILE_NE_K/QI8_0 + 4)
+static_assert(MMQ_MMA_TILE_X_K_IU4 % 8 == 4, "Wrong padding for IU4.");
 #endif
 
 static_assert(MMQ_MMA_TILE_X_K_Q8_0 % 8 == 4, "Wrong padding.");
@@ -478,7 +478,7 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
 
     int   * x_qs = (int   *)  x_tile;
-    float * x_df = (float *) (x_qs + MMQ_TILE_NE_K);
+    float * x_df = (float *) (x_qs + 2*MMQ_TILE_NE_K);
 
     constexpr int threads_per_row = MMQ_ITER_K / (4 * QR4_0);
     constexpr int nrows = warp_size / threads_per_row;
@@ -1358,6 +1358,9 @@ static __device__ __forceinline__ void vec_dot_q8_0_q8_1_iu4(
     constexpr int ntx = rows_per_warp/tile_C::I;
 
     y += (threadIdx.y % ntx) * (tile_C::J*MMQ_TILE_Y_K);
+    // IU4 packs 2x values per int: skip second call (k00 >= MMQ_TILE_NE_K)
+    if (k00 >= MMQ_TILE_NE_K) return;
+
 
     const int   * x_qs = (const int   *) x;
     const float * x_df = (const float *) x_qs + MMQ_TILE_NE_K;
