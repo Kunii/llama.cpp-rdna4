@@ -117,7 +117,31 @@ else()
         ../ggml-cuda/template-instances/fattn-vec-instance-f16-planar3_0.cu
         ../ggml-cuda/template-instances/fattn-vec-instance-f16-iso3_0.cu
         ../ggml-cuda/template-instances/fattn-vec-instance-f16-planar4_0.cu
-        ../ggml-cuda/template-instances/fattn-vec-instance-f16-iso4_0.cu)
+        ../ggml-cuda/template-instances/fattn-vec-instance-f16-iso4_0.cu
+        # IQ4_NL pairs
+        ../ggml-cuda/template-instances/fattn-vec-instance-iq4_nl-iq4_nl.cu
+        ../ggml-cuda/template-instances/fattn-vec-instance-iq4_nl-f16.cu
+        ../ggml-cuda/template-instances/fattn-vec-instance-iq4_nl-q4_0.cu
+        ../ggml-cuda/template-instances/fattn-vec-instance-iq4_nl-q4_1.cu
+        ../ggml-cuda/template-instances/fattn-vec-instance-iq4_nl-q5_0.cu
+        ../ggml-cuda/template-instances/fattn-vec-instance-iq4_nl-q5_1.cu
+        ../ggml-cuda/template-instances/fattn-vec-instance-iq4_nl-q8_0.cu
+        ../ggml-cuda/template-instances/fattn-vec-instance-iq4_nl-bf16.cu
+        ../ggml-cuda/template-instances/fattn-vec-instance-iq4_nl-planar3_0.cu
+        ../ggml-cuda/template-instances/fattn-vec-instance-iq4_nl-iso3_0.cu
+        ../ggml-cuda/template-instances/fattn-vec-instance-iq4_nl-planar4_0.cu
+        ../ggml-cuda/template-instances/fattn-vec-instance-iq4_nl-iso4_0.cu
+        ../ggml-cuda/template-instances/fattn-vec-instance-f16-iq4_nl.cu
+        ../ggml-cuda/template-instances/fattn-vec-instance-q4_0-iq4_nl.cu
+        ../ggml-cuda/template-instances/fattn-vec-instance-q4_1-iq4_nl.cu
+        ../ggml-cuda/template-instances/fattn-vec-instance-q5_0-iq4_nl.cu
+        ../ggml-cuda/template-instances/fattn-vec-instance-q5_1-iq4_nl.cu
+        ../ggml-cuda/template-instances/fattn-vec-instance-q8_0-iq4_nl.cu
+        ../ggml-cuda/template-instances/fattn-vec-instance-bf16-iq4_nl.cu
+        ../ggml-cuda/template-instances/fattn-vec-instance-planar3_0-iq4_nl.cu
+        ../ggml-cuda/template-instances/fattn-vec-instance-iso3_0-iq4_nl.cu
+        ../ggml-cuda/template-instances/fattn-vec-instance-planar4_0-iq4_nl.cu
+        ../ggml-cuda/template-instances/fattn-vec-instance-iso4_0-iq4_nl.cu)
 endif()
 
 ggml_add_backend_library(ggml-hip

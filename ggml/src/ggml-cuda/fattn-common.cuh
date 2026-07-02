@@ -330,6 +330,58 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_q8_0(
 }
 
 // ========================================================================
+// IQ4_NL vec_dot_KQ — non-linear 4-bit via kvalues_iq4nl LUT.
+// Block size = 32 (same indexing as q4_0), scale in block header.
+// No dp4a possible (non-linear mapping); full float per element.
+// ========================================================================
+
+static constexpr __device__ float kvalues_iq4nl_f32[16] = {
+    -127.0f, -104.0f, -83.0f, -65.0f, -49.0f, -35.0f, -22.0f, -10.0f,
+      1.0f,   13.0f,  25.0f,  38.0f,  53.0f,  69.0f,  89.0f, 113.0f,
+};
+
+template<int D, int nthreads>
+static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_iq4_nl(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+
+    const block_q4_0 * K = (const block_q4_0 *) K_c;
+    GGML_UNUSED(Q_v);
+    const float2 * Q_ds = (const float2 *) Q_ds_v;
+
+    float sum = 0.0f;
+
+#pragma unroll
+    for (int k_KQ_0 = 0; k_KQ_0 < int(D/sizeof(int)); k_KQ_0 += nthreads) {
+        const int k_KQ = k_KQ_0 + (nthreads == WARP_SIZE ? threadIdx.x : threadIdx.x % nthreads);
+
+        const int ib    = k_KQ / QI8_1;
+        const int iqs4  = k_KQ % QI4_0;
+        const int shift = k_KQ & (QI8_1/2);
+
+        // Load 4 nibbles (same layout as q4_0 — block_q4_0 has same 32-element block layout)
+        int v;
+        ggml_cuda_memcpy_1<sizeof(int), 2>(&v, K[ib].qs + sizeof(int)*iqs4);
+        v = (v >> shift) & 0x0F0F0F0F;
+
+        // Lookup each nibble in kvalues_iq4nl LUT (float version from fattn-common.cuh)
+        float kv[4];
+        kv[0] = __half2float(K[ib].d) * kvalues_iq4nl_f32[v & 0xF];
+        kv[1] = __half2float(K[ib].d) * kvalues_iq4nl_f32[(v >> 4) & 0xF];
+        kv[2] = __half2float(K[ib].d) * kvalues_iq4nl_f32[(v >> 8) & 0xF];
+        kv[3] = __half2float(K[ib].d) * kvalues_iq4nl_f32[(v >> 12) & 0xF];
+
+        const int u = Q_q8[k_KQ_0/nthreads];
+        const int8_t * q8 = (const int8_t *) &u;
+        const float2 ds = Q_ds[k_KQ_0/nthreads];
+
+        sum += kv[0] * (ds.x * q8[0] - ds.y/QI8_1);
+        sum += kv[1] * (ds.x * q8[1] - ds.y/QI8_1);
+        sum += kv[2] * (ds.x * q8[2] - ds.y/QI8_1);
+        sum += kv[3] * (ds.x * q8[3] - ds.y/QI8_1);
+    }
+
+    return sum;
+}
 // PlanarQuant/IsoQuant vec_dot_KQ functions for FA vec kernel
 //
 // Each int-chunk (k_KQ) holds 4 elements. Planar blocks are 128 elements,
@@ -836,6 +888,44 @@ static __device__ __forceinline__ void dequantize_V_q8_0(const void * __restrict
 }
 
 // ========================================================================
+// dequantize_V for iq4_nl — non-linear 4-bit via kvalues_iq4nl LUT
+// ========================================================================
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_iq4_nl(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    const block_q4_0 * x = (const block_q4_0 *) vx;
+
+    const int64_t ib  = i0 /  QK4_0;
+    const int     iqs = i0 %  QI4_0;
+    const int     sh  = (i0 & (QI8_1/2));
+
+    int v;
+    ggml_cuda_memcpy_1<sizeof(int), 2>(&v, x[ib].qs + sizeof(int)*iqs);
+    v = (v >> sh) & 0x0F0F0F0F;
+
+    float vals[ne];
+    vals[0] = kvalues_iq4nl_f32[v & 0xF];
+    vals[1] = kvalues_iq4nl_f32[(v >> 4) & 0xF];
+    vals[2] = kvalues_iq4nl_f32[(v >> 8) & 0xF];
+    vals[3] = kvalues_iq4nl_f32[(v >> 12) & 0xF];
+
+#ifdef FP16_AVAILABLE
+    if constexpr (std::is_same<T, half>::value) {
+        half d = x[ib].d;
+        ((half2 *) dst)[0] = make_half2(d * __float2half(vals[0]), d * __float2half(vals[1]));
+        if constexpr (ne >= 4) {
+            ((half2 *) dst)[1] = make_half2(d * __float2half(vals[2]), d * __float2half(vals[3]));
+        }
+    } else
+#endif
+    if constexpr (std::is_same<T, float>::value) {
+        float d = __half2float(x[ib].d);
+        for (int l = 0; l < ne; ++l) {
+            ((float *) dst)[l] = d * vals[l];
+        }
+    }
+}
+
+// ========================================================================
 // dequantize_V for planar3_0 — 2D Givens rotation, 3-bit, ne elements starting at i0
 // Uses pre-multiplied rotation tables: 2 FMAs per pair → 1 add
 // ========================================================================
@@ -990,6 +1080,8 @@ constexpr __device__ vec_dot_KQ_t get_vec_dot_KQ() {
         return vec_dot_fattn_vec_KQ_planar4_0<D, nthreads>;
     } else if constexpr (type_K == GGML_TYPE_ISO4_0) {
         return vec_dot_fattn_vec_KQ_iso4_0<D, nthreads>;
+    } else if constexpr (type_K == GGML_TYPE_IQ4_NL) {
+        return vec_dot_fattn_vec_KQ_iq4_nl<D, nthreads>;
     } else {
         static_assert(type_K == -1, "bad type");
         return nullptr;
@@ -1020,6 +1112,8 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
         return dequantize_V_iso3_0<T, ne>;
     } else if constexpr (type_V == GGML_TYPE_ISO4_0) {
         return dequantize_V_iso4_0<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_IQ4_NL) {
+        return dequantize_V_iq4_nl<T, ne>;
     } else {
         static_assert(type_V == -1, "bad type");
         return nullptr;
