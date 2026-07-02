@@ -1326,11 +1326,11 @@ namespace ggml_cuda_mma {
         acc[0] = __builtin_amdgcn_wmma_i32_16x16x16_iu4_w32_gfx12(true, a_ptr[2], true, b_ptr[2], acc[0], true);
         acc[0] = __builtin_amdgcn_wmma_i32_16x16x16_iu4_w32_gfx12(true, a_ptr[3], true, b_ptr[3], acc[0], true);
 #elif defined(RDNA4)
-        using int32x4_t = __attribute__((__vector_size__(4 * sizeof(int)))) int;
-        int32x4_t * a_vec = (int32x4_t *) A.x;
-        int32x4_t * b_vec = (int32x4_t *) B.x;
-        acc[0] = __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32(true, a_vec[0], true, b_vec[0], acc[0], true);
-        acc[0] = __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32(true, a_vec[1], true, b_vec[1], acc[0], true);
+        using int32x2_t = __attribute__((__vector_size__(2 * sizeof(int)))) int;
+        int32x2_t * a_vec = (int32x2_t *) A.x;
+        int32x2_t * b_vec = (int32x2_t *) B.x;
+        acc[0] = __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32_gfx12(true, a_vec[0], true, b_vec[0], acc[0], true);
+        acc[0] = __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32_gfx12(true, a_vec[1], true, b_vec[1], acc[0], true);
 #endif // RDNA4
 #else
         GGML_UNUSED_VARS(D, A, B);
