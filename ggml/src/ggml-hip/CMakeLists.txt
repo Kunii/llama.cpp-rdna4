@@ -118,6 +118,15 @@ if (GGML_HIP_ROCWMMA_FATTN)
     add_compile_definitions(GGML_HIP_ROCWMMA_FATTN)
 endif()
 
+# RDNA4 architecture detection — enables AMD_WMMA_AVAILABLE
+if (CMAKE_HIP_ARCHITECTURES MATCHES "gfx12")
+    message(STATUS "RDNA4 detected by gfx12 arch — enabling WMMA native compute")
+    add_compile_definitions(RDNA4)
+elseif (CMAKE_HIP_ARCHITECTURES MATCHES "gfx11")
+    message(STATUS "RDNA3 detected by gfx11 arch — enabling WMMA native compute")
+    add_compile_definitions(RDNA3)
+endif()
+
 if (NOT GGML_HIP_MMQ_MFMA)
     add_compile_definitions(GGML_HIP_NO_MMQ_MFMA)
 endif()

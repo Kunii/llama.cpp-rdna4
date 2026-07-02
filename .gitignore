@@ -153,3 +153,9 @@ a.out.*
 
 AGENTS.local.md
 .pi/SYSTEM.md
+.hermes/
+AGENTS.md
+PLAN.md
+
+# Graphify
+graphify-out/

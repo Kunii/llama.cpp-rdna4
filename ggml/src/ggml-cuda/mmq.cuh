@@ -3577,8 +3577,8 @@ static __global__ void mul_mat_q(
     }
     __syncthreads();
 
-    // On non-CDNA AMD or old CUDA the performance with stream-k was worse, use conventional tiling instead:
-#if (defined(GGML_USE_HIP) && !defined(CDNA)) || __CUDA_ARCH__ < GGML_CUDA_CC_VOLTA
+    // On RDNA4+ stream-k helps L2/L3 cache utilization, enable it:
+#if (defined(GGML_USE_HIP) && !defined(CDNA) && !defined(RDNA4)) || __CUDA_ARCH__ < GGML_CUDA_CC_VOLTA
     {
         const uint2 tmp2 = fast_div_modulo(blockIdx.z, nchannels_y);
         const int wt = tmp2.x;
