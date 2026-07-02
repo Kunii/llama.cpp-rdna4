@@ -91,6 +91,18 @@ cmake --build . --config Release -j$(nproc) --target llama-server
 
 ---
 
+## Wiki reference
+
+Full E2E breakdown of the fork, all patches, PlanarQuant architecture, and build guide:
+
+**`projects/rdna4-llamacpp-fork-build`** — RDNA4 llama.cpp Fork Build & Porting Guide
+
+Derived Hermes skill for future KV type additions:
+
+**`mlops/llama-cpp-new-kv-type`** — Add a new KV cache quant type to llama.cpp for HIP
+
+---
+
 ## Git rules
 
 - Commits pushed directly to `master` (private fork, no reviews)
