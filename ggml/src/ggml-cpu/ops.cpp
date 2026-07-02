@@ -8418,10 +8418,21 @@ static void ggml_compute_forward_flash_attn_ext_f16_one_chunk(
     const float m0 = powf(2.0f, -(max_bias       ) / n_head_log2);
     const float m1 = powf(2.0f, -(max_bias / 2.0f) / n_head_log2);
 
+    // PlanarQuant/IsoQuant types have no CPU type traits (GPU only).
+    // Early-return so the GPU backend handles this FA call.
+    if (!ggml_get_type_traits_cpu(k->type) || !ggml_get_type_traits_cpu(k->type)->vec_dot) {
+        return;
+    }
+    const auto * v_traits = ggml_get_type_traits(v->type);
+    if (!v_traits || !v_traits->to_float) {
+        return;
+    }
+
     ggml_type         const k_vec_dot_type = ggml_get_type_traits_cpu(k->type)->vec_dot_type;
     ggml_from_float_t const q_to_vec_dot   = ggml_get_type_traits_cpu(k_vec_dot_type)->from_float;
     ggml_vec_dot_t    const kq_vec_dot     = ggml_get_type_traits_cpu(k->type)->vec_dot;
-    ggml_to_float_t   const v_to_float     = ggml_get_type_traits(v->type)->to_float;
+
+    ggml_to_float_t   const v_to_float     = v_traits->to_float;
 
     GGML_ASSERT((                            q_to_vec_dot) && "fattn: unsupported K-type");
     GGML_ASSERT((v->type == GGML_TYPE_F32 || v_to_float  ) && "fattn: unsupported V-type");
