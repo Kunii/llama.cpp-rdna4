@@ -733,6 +733,29 @@ static void dequantize_row_iso4_0_cuda(const void * vx, dst_t * y, const int64_t
     dequantize_block_iso4_0<<<grid, 256, 0, stream>>>(vx, y, k);
 }
 
+// NC wrappers for ISO types (non-contiguous dequant).
+// FA always allocates contiguous K/V so this path is never exercised with
+// non-trivial strides, but a valid function pointer is required to avoid nullptr.
+static void dequantize_row_iso3_0_nc_cuda(const void * vx, half * y,
+        const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
+        const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
+    GGML_UNUSED(s01); GGML_UNUSED(s02); GGML_UNUSED(s03);
+    const int64_t k = ne00 * ne01 * ne02 * ne03;
+    const int nb = (int)(k / 128);
+    const dim3 grid(32, nb > 65535 ? 65535 : nb, 1);
+    dequantize_block_iso3_0<<<grid, 256, 0, stream>>>(vx, y, k);
+}
+
+static void dequantize_row_iso4_0_nc_cuda(const void * vx, half * y,
+        const int64_t ne00, const int64_t ne01, const int64_t ne02, const int64_t ne03,
+        const int64_t s01, const int64_t s02, const int64_t s03, cudaStream_t stream) {
+    GGML_UNUSED(s01); GGML_UNUSED(s02); GGML_UNUSED(s03);
+    const int64_t k = ne00 * ne01 * ne02 * ne03;
+    const int nb = (int)(k / 128);
+    const dim3 grid(32, nb > 65535 ? 65535 : nb, 1);
+    dequantize_block_iso4_0<<<grid, 256, 0, stream>>>(vx, y, k);
+}
+
 to_bf16_cuda_t ggml_get_to_bf16_cuda(ggml_type type) {
     switch (type) {
         case GGML_TYPE_F32:
@@ -895,6 +918,10 @@ to_fp16_nc_cuda_t ggml_get_to_fp16_nc_cuda(ggml_type type) {
             return dequantize_block_cuda<QK_PLANAR3, 1, dequantize_planar3_0>;
         case GGML_TYPE_PLANAR4_0:
             return dequantize_block_cuda<QK_PLANAR4, 1, dequantize_planar4_0>;
+        case GGML_TYPE_ISO3_0:
+            return dequantize_row_iso3_0_nc_cuda;
+        case GGML_TYPE_ISO4_0:
+            return dequantize_row_iso4_0_nc_cuda;
         default:
             return nullptr;
     }
