@@ -1,5 +1,6 @@
 #include "convert.cuh"
 #include "dequantize.cuh"
+#include "dequantize-planar-iso.cuh"
 
 #include <cstdint>
 
@@ -698,6 +699,40 @@ static void convert_unary_cont_cuda(const void * vx, dst_t * y, const int64_t k,
     convert_unary_cuda<src_t>(vx, y, k, 1, 1, 1, k, k, k, stream);
 }
 
+// ========================================================================
+// PlanarQuant/IsoQuant host wrappers
+// ========================================================================
+
+template<typename dst_t>
+static void dequantize_row_planar3_0_cuda(const void * vx, dst_t * y, const int64_t k, cudaStream_t stream) {
+    constexpr int qk = 128;
+    constexpr int qr = 1;
+    const int nb = (int)(k / qk);
+    dequantize_block_cuda<qk, qr, dequantize_planar3_0, dst_t>(vx, y, k, 1, 1, 1, nb, nb, nb, stream);
+}
+
+template<typename dst_t>
+static void dequantize_row_planar4_0_cuda(const void * vx, dst_t * y, const int64_t k, cudaStream_t stream) {
+    constexpr int qk = 128;
+    constexpr int qr = 1;
+    const int nb = (int)(k / qk);
+    dequantize_block_cuda<qk, qr, dequantize_planar4_0, dst_t>(vx, y, k, 1, 1, 1, nb, nb, nb, stream);
+}
+
+template<typename dst_t>
+static void dequantize_row_iso3_0_cuda(const void * vx, dst_t * y, const int64_t k, cudaStream_t stream) {
+    const int nb = (int)(k / 128);
+    const dim3 grid(32, nb > 65535 ? 65535 : nb, 1);
+    dequantize_block_iso3_0<<<grid, 256, 0, stream>>>(vx, y, k);
+}
+
+template<typename dst_t>
+static void dequantize_row_iso4_0_cuda(const void * vx, dst_t * y, const int64_t k, cudaStream_t stream) {
+    const int nb = (int)(k / 128);
+    const dim3 grid(32, nb > 65535 ? 65535 : nb, 1);
+    dequantize_block_iso4_0<<<grid, 256, 0, stream>>>(vx, y, k);
+}
+
 to_bf16_cuda_t ggml_get_to_bf16_cuda(ggml_type type) {
     switch (type) {
         case GGML_TYPE_F32:
@@ -758,6 +793,14 @@ to_fp16_cuda_t ggml_get_to_fp16_cuda(ggml_type type) {
             return dequantize_row_mxfp4_cuda;
         case GGML_TYPE_NVFP4:
             return dequantize_row_nvfp4_cuda;
+        case GGML_TYPE_PLANAR3_0:
+            return dequantize_row_planar3_0_cuda;
+        case GGML_TYPE_ISO3_0:
+            return dequantize_row_iso3_0_cuda;
+        case GGML_TYPE_PLANAR4_0:
+            return dequantize_row_planar4_0_cuda;
+        case GGML_TYPE_ISO4_0:
+            return dequantize_row_iso4_0_cuda;
         case GGML_TYPE_F32:
             return convert_unary_cont_cuda<float>;
         case GGML_TYPE_BF16:
@@ -813,6 +856,14 @@ to_fp32_cuda_t ggml_get_to_fp32_cuda(ggml_type type) {
             return dequantize_row_mxfp4_cuda;
         case GGML_TYPE_NVFP4:
             return dequantize_row_nvfp4_cuda;
+        case GGML_TYPE_PLANAR3_0:
+            return dequantize_row_planar3_0_cuda;
+        case GGML_TYPE_ISO3_0:
+            return dequantize_row_iso3_0_cuda;
+        case GGML_TYPE_PLANAR4_0:
+            return dequantize_row_planar4_0_cuda;
+        case GGML_TYPE_ISO4_0:
+            return dequantize_row_iso4_0_cuda;
         case GGML_TYPE_F16:
             return convert_unary_cont_cuda<half>;
         case GGML_TYPE_BF16:
@@ -840,6 +891,10 @@ to_fp16_nc_cuda_t ggml_get_to_fp16_nc_cuda(ggml_type type) {
             return dequantize_block_cuda<QK8_0, QR8_0, dequantize_q8_0>;
         case GGML_TYPE_BF16:
             return convert_unary_cuda<nv_bfloat16>;
+        case GGML_TYPE_PLANAR3_0:
+            return dequantize_block_cuda<QK_PLANAR3, 1, dequantize_planar3_0>;
+        case GGML_TYPE_PLANAR4_0:
+            return dequantize_block_cuda<QK_PLANAR4, 1, dequantize_planar4_0>;
         default:
             return nullptr;
     }

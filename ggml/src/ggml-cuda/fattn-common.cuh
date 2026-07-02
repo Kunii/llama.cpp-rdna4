@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common.cuh"
+#include "dequantize-planar-iso.cuh"
 #include "convert.cuh"
 #include "vecdotq.cuh"
 
@@ -328,6 +329,223 @@ static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_q8_0(
     return sum;
 }
 
+// ========================================================================
+// PlanarQuant/IsoQuant vec_dot_KQ functions for FA vec kernel
+//
+// Each int-chunk (k_KQ) holds 4 elements. Planar blocks are 128 elements,
+// so we index the per-element data directly rather than using the q8_1
+// block indexing pattern (which assumes 32-element q8_1 blocks).
+// ========================================================================
+// PlanarQuant/IsoQuant vec_dot_KQ functions for FA vec kernel.
+// Use pre-multiplied rotation tables to eliminate on-the-fly rotation FMAs.
+//
+// Each int-chunk (k_KQ) holds 4 elements. Planar blocks are 128 elements.
+// ========================================================================
+
+template<int D, int nthreads>
+static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_planar3_0(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+
+    const block_planar3_0 * K = (const block_planar3_0 *) K_c;
+    GGML_UNUSED(Q_v);
+    const float2 * Q_ds = (const float2 *) Q_ds_v;
+
+    float sum = 0.0f;
+
+#pragma unroll
+    for (int k_KQ_0 = 0; k_KQ_0 < int(D/sizeof(int)); k_KQ_0 += nthreads) {
+        const int k_KQ = k_KQ_0 + (nthreads == WARP_SIZE ? threadIdx.x : threadIdx.x % nthreads);
+        const int elem_base = k_KQ * 4;
+
+        const int ib_K = elem_base / QK_PLANAR3;
+        const float norm = __half2float(K[ib_K].norm);
+
+        // Load 4 centroid indices via unpack_3bit, then do table lookup
+        int p0 = (elem_base % QK_PLANAR3) / 2;
+        uint8_t i0a = unpack_3bit(K[ib_K].qs, K[ib_K].signs, elem_base);
+        uint8_t i0b = unpack_3bit(K[ib_K].qs, K[ib_K].signs, elem_base + 1);
+        uint8_t i1a = unpack_3bit(K[ib_K].qs, K[ib_K].signs, elem_base + 2);
+        uint8_t i1b = unpack_3bit(K[ib_K].qs, K[ib_K].signs, elem_base + 3);
+
+        // k0 = COS[p][i0a] + SIN[p][i0b],  k1 = COS[p][i0b] - SIN[p][i0a]
+        // k2 = COS[p+1][i1a] + SIN[p+1][i1b],  k3 = COS[p+1][i1b] - SIN[p+1][i1a]
+        int p1 = ((elem_base + 2) % QK_PLANAR3) / 2;
+        float k0 = (P3_COS_TABLE[p0*8 + i0a] + P3_SIN_TABLE[p0*8 + i0b]) * norm;
+        float k1 = (P3_COS_TABLE[p0*8 + i0b] - P3_SIN_TABLE[p0*8 + i0a]) * norm;
+        float k2 = (P3_COS_TABLE[p1*8 + i1a] + P3_SIN_TABLE[p1*8 + i1b]) * norm;
+        float k3 = (P3_COS_TABLE[p1*8 + i1b] - P3_SIN_TABLE[p1*8 + i1a]) * norm;
+
+        const int u = Q_q8[k_KQ_0/nthreads];
+        const int8_t * q8 = (const int8_t *) &u;
+        const float2 ds = Q_ds[k_KQ_0/nthreads];
+
+        sum += k0 * (ds.x * q8[0] - ds.y/QI8_1);
+        sum += k1 * (ds.x * q8[1] - ds.y/QI8_1);
+        sum += k2 * (ds.x * q8[2] - ds.y/QI8_1);
+        sum += k3 * (ds.x * q8[3] - ds.y/QI8_1);
+    }
+
+    return sum;
+}
+
+template<int D, int nthreads>
+static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_planar4_0(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+
+    const block_planar4_0 * K = (const block_planar4_0 *) K_c;
+    GGML_UNUSED(Q_v);
+    const float2 * Q_ds = (const float2 *) Q_ds_v;
+
+    float sum = 0.0f;
+
+#pragma unroll
+    for (int k_KQ_0 = 0; k_KQ_0 < int(D/sizeof(int)); k_KQ_0 += nthreads) {
+        const int k_KQ = k_KQ_0 + (nthreads == WARP_SIZE ? threadIdx.x : threadIdx.x % nthreads);
+        const int elem_base = k_KQ * 4;
+
+        const int ib_K = elem_base / QK_PLANAR4;
+        const float norm = __half2float(K[ib_K].norm);
+
+        int p0 = (elem_base % QK_PLANAR4) / 2;
+        uint8_t i0a = unpack_4bit(K[ib_K].qs, elem_base);
+        uint8_t i0b = unpack_4bit(K[ib_K].qs, elem_base + 1);
+        uint8_t i1a = unpack_4bit(K[ib_K].qs, elem_base + 2);
+        uint8_t i1b = unpack_4bit(K[ib_K].qs, elem_base + 3);
+
+        int p1 = ((elem_base + 2) % QK_PLANAR4) / 2;
+        float k0 = (P4_COS_TABLE[p0*16 + i0a] + P4_SIN_TABLE[p0*16 + i0b]) * norm;
+        float k1 = (P4_COS_TABLE[p0*16 + i0b] - P4_SIN_TABLE[p0*16 + i0a]) * norm;
+        float k2 = (P4_COS_TABLE[p1*16 + i1a] + P4_SIN_TABLE[p1*16 + i1b]) * norm;
+        float k3 = (P4_COS_TABLE[p1*16 + i1b] - P4_SIN_TABLE[p1*16 + i1a]) * norm;
+
+        const int u = Q_q8[k_KQ_0/nthreads];
+        const int8_t * q8 = (const int8_t *) &u;
+        const float2 ds = Q_ds[k_KQ_0/nthreads];
+
+        sum += k0 * (ds.x * q8[0] - ds.y/QI8_1);
+        sum += k1 * (ds.x * q8[1] - ds.y/QI8_1);
+        sum += k2 * (ds.x * q8[2] - ds.y/QI8_1);
+        sum += k3 * (ds.x * q8[3] - ds.y/QI8_1);
+    }
+
+    return sum;
+}
+
+template<int D, int nthreads>
+static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_iso3_0(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+
+    const block_iso3_0 * K = (const block_iso3_0 *) K_c;
+    GGML_UNUSED(Q_v);
+    const float2 * Q_ds = (const float2 *) Q_ds_v;
+
+    float sum = 0.0f;
+
+#pragma unroll
+    for (int k_KQ_0 = 0; k_KQ_0 < int(D/sizeof(int)); k_KQ_0 += nthreads) {
+        const int k_KQ = k_KQ_0 + (nthreads == WARP_SIZE ? threadIdx.x : threadIdx.x % nthreads);
+        const int elem_base = k_KQ * 4;
+
+        const int ib_K = elem_base / QK_ISO3;
+        const float norm = __half2float(K[ib_K].norm);
+
+        // Load 4 centroid indices
+        int g = (elem_base % QK_ISO3) / 4;
+        uint8_t i0 = unpack_3bit(K[ib_K].qs, K[ib_K].signs, elem_base);
+        uint8_t i1 = unpack_3bit(K[ib_K].qs, K[ib_K].signs, elem_base + 1);
+        uint8_t i2 = unpack_3bit(K[ib_K].qs, K[ib_K].signs, elem_base + 2);
+        uint8_t i3 = unpack_3bit(K[ib_K].qs, K[ib_K].signs, elem_base + 3);
+
+        // ISO3_*_TABLE[g*8 + idx] = component * cent[idx]
+        // conj(q) = (qw, -qx, -qy, -qz)
+        // kv[0] = qw0 + qx1 + qy2 + qz3
+        // kv[1] = qw1 - qx0 - qy3 + qz2
+        // kv[2] = qw2 + qx3 - qy0 + qz1
+        // kv[3] = qw3 - qx2 + qy1 - qz0
+        int beg = g * 8;
+        float qw0 = ISO3_QW_TABLE[beg+i0], qx1 = ISO3_QX_TABLE[beg+i1];
+        float qy2 = ISO3_QY_TABLE[beg+i2], qz3 = ISO3_QZ_TABLE[beg+i3];
+        float qw1 = ISO3_QW_TABLE[beg+i1], qx0 = ISO3_QX_TABLE[beg+i0];
+        float qy3 = ISO3_QY_TABLE[beg+i3], qz2 = ISO3_QZ_TABLE[beg+i2];
+        float qw2 = ISO3_QW_TABLE[beg+i2], qx3 = ISO3_QX_TABLE[beg+i3];
+        float qy0 = ISO3_QY_TABLE[beg+i0], qz1 = ISO3_QZ_TABLE[beg+i1];
+        float qw3 = ISO3_QW_TABLE[beg+i3], qx2 = ISO3_QX_TABLE[beg+i2];
+        float qy1 = ISO3_QY_TABLE[beg+i1], qz0 = ISO3_QZ_TABLE[beg+i0];
+
+        float kv[4] = {
+            (qw0+qx1+qy2+qz3) * norm,
+            (qw1-qx0-qy3+qz2) * norm,
+            (qw2+qx3-qy0+qz1) * norm,
+            (qw3-qx2+qy1-qz0) * norm,
+        };
+
+        const int u = Q_q8[k_KQ_0/nthreads];
+        const int8_t * q8 = (const int8_t *) &u;
+        const float2 ds = Q_ds[k_KQ_0/nthreads];
+
+        sum += kv[0] * (ds.x * q8[0] - ds.y/QI8_1);
+        sum += kv[1] * (ds.x * q8[1] - ds.y/QI8_1);
+        sum += kv[2] * (ds.x * q8[2] - ds.y/QI8_1);
+        sum += kv[3] * (ds.x * q8[3] - ds.y/QI8_1);
+    }
+
+    return sum;
+}
+
+template<int D, int nthreads>
+static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_iso4_0(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+
+    const block_planar4_0 * K = (const block_planar4_0 *) K_c;
+    GGML_UNUSED(Q_v);
+    const float2 * Q_ds = (const float2 *) Q_ds_v;
+
+    float sum = 0.0f;
+
+#pragma unroll
+    for (int k_KQ_0 = 0; k_KQ_0 < int(D/sizeof(int)); k_KQ_0 += nthreads) {
+        const int k_KQ = k_KQ_0 + (nthreads == WARP_SIZE ? threadIdx.x : threadIdx.x % nthreads);
+        const int elem_base = k_KQ * 4;
+
+        const int ib_K = elem_base / QK_ISO4;
+        const float norm = __half2float(K[ib_K].norm);
+
+        int g = (elem_base % QK_ISO4) / 4;
+        uint8_t i0 = unpack_4bit(K[ib_K].qs, elem_base);
+        uint8_t i1 = unpack_4bit(K[ib_K].qs, elem_base + 1);
+        uint8_t i2 = unpack_4bit(K[ib_K].qs, elem_base + 2);
+        uint8_t i3 = unpack_4bit(K[ib_K].qs, elem_base + 3);
+
+        int beg = g * 16;
+        float qw0 = ISO4_QW_TABLE[beg+i0], qx1 = ISO4_QX_TABLE[beg+i1];
+        float qy2 = ISO4_QY_TABLE[beg+i2], qz3 = ISO4_QZ_TABLE[beg+i3];
+        float qw1 = ISO4_QW_TABLE[beg+i1], qx0 = ISO4_QX_TABLE[beg+i0];
+        float qy3 = ISO4_QY_TABLE[beg+i3], qz2 = ISO4_QZ_TABLE[beg+i2];
+        float qw2 = ISO4_QW_TABLE[beg+i2], qx3 = ISO4_QX_TABLE[beg+i3];
+        float qy0 = ISO4_QY_TABLE[beg+i0], qz1 = ISO4_QZ_TABLE[beg+i1];
+        float qw3 = ISO4_QW_TABLE[beg+i3], qx2 = ISO4_QX_TABLE[beg+i2];
+        float qy1 = ISO4_QY_TABLE[beg+i1], qz0 = ISO4_QZ_TABLE[beg+i0];
+
+        float kv[4] = {
+            (qw0+qx1+qy2+qz3) * norm,
+            (qw1-qx0-qy3+qz2) * norm,
+            (qw2+qx3-qy0+qz1) * norm,
+            (qw3-qx2+qy1-qz0) * norm,
+        };
+
+        const int u = Q_q8[k_KQ_0/nthreads];
+        const int8_t * q8 = (const int8_t *) &u;
+        const float2 ds = Q_ds[k_KQ_0/nthreads];
+
+        sum += kv[0] * (ds.x * q8[0] - ds.y/QI8_1);
+        sum += kv[1] * (ds.x * q8[1] - ds.y/QI8_1);
+        sum += kv[2] * (ds.x * q8[2] - ds.y/QI8_1);
+        sum += kv[3] * (ds.x * q8[3] - ds.y/QI8_1);
+    }
+
+    return sum;
+}
+
 template <typename Tds, int ni>
 static __device__ __forceinline__ void quantize_q8_1_to_shared(
     const float * __restrict__ x, const float scale, int * __restrict__ yq32, void * __restrict__ yds) {
@@ -617,6 +835,137 @@ static __device__ __forceinline__ void dequantize_V_q8_0(const void * __restrict
     }
 }
 
+// ========================================================================
+// dequantize_V for planar3_0 — 2D Givens rotation, 3-bit, ne elements starting at i0
+// Uses pre-multiplied rotation tables: 2 FMAs per pair → 1 add
+// ========================================================================
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_planar3_0(
+    const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    const block_planar3_0 * x = (const block_planar3_0 *) vx;
+    const int64_t ib = i0 / QK_PLANAR3;
+    const float norm = __half2float(x[ib].norm);
+
+#pragma unroll
+    for (int l = 0; l < ne; l += 2) {
+        int p = (int)((i0 + l) % QK_PLANAR3) / 2;
+        uint8_t idx0 = unpack_3bit(x[ib].qs, x[ib].signs, (int)(i0 + l));
+        uint8_t idx1 = unpack_3bit(x[ib].qs, x[ib].signs, (int)(i0 + l + 1));
+        float f0 = (P3_COS_TABLE[p*8 + idx0] + P3_SIN_TABLE[p*8 + idx1]) * norm;
+        float f1 = (P3_COS_TABLE[p*8 + idx1] - P3_SIN_TABLE[p*8 + idx0]) * norm;
+#ifdef FP16_AVAILABLE
+        if constexpr (std::is_same<T, half>::value) {
+            ((half2 *) dst)[l/2] = make_half2(f0, f1);
+        } else
+#endif
+        if constexpr (std::is_same<T, float>::value) {
+            ((float *) dst)[l]     = f0;
+            ((float *) dst)[l + 1] = f1;
+        }
+    }
+}
+
+// ========================================================================
+// dequantize_V for planar4_0 — 2D Givens rotation, 4-bit
+// ========================================================================
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_planar4_0(
+    const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    const block_planar4_0 * x = (const block_planar4_0 *) vx;
+    const int64_t ib = i0 / QK_PLANAR4;
+    const float norm = __half2float(x[ib].norm);
+
+#pragma unroll
+    for (int l = 0; l < ne; l += 2) {
+        int p = (int)((i0 + l) % QK_PLANAR4) / 2;
+        uint8_t idx0 = unpack_4bit(x[ib].qs, (int)(i0 + l));
+        uint8_t idx1 = unpack_4bit(x[ib].qs, (int)(i0 + l + 1));
+        float f0 = (P4_COS_TABLE[p*16 + idx0] + P4_SIN_TABLE[p*16 + idx1]) * norm;
+        float f1 = (P4_COS_TABLE[p*16 + idx1] - P4_SIN_TABLE[p*16 + idx0]) * norm;
+#ifdef FP16_AVAILABLE
+        if constexpr (std::is_same<T, half>::value) {
+            ((half2 *) dst)[l/2] = make_half2(f0, f1);
+        } else
+#endif
+        if constexpr (std::is_same<T, float>::value) {
+            ((float *) dst)[l]     = f0;
+            ((float *) dst)[l + 1] = f1;
+        }
+    }
+}
+
+// ========================================================================
+// dequantize_V for iso3_0 — quaternion rotation, 3-bit
+// ========================================================================
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_iso3_0(
+    const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    static_assert(ne == 4, "iso3 dequantize_V requires ne=4");
+    const block_iso3_0 * x = (const block_iso3_0 *) vx;
+    const int64_t ib = i0 / QK_ISO3;
+    const float norm = __half2float(x[ib].norm);
+
+    int g = (int)(i0 % QK_ISO3) / 4;
+    uint8_t i0v = unpack_3bit(x[ib].qs, x[ib].signs, (int)(i0 + 0));
+    uint8_t i1v = unpack_3bit(x[ib].qs, x[ib].signs, (int)(i0 + 1));
+    uint8_t i2v = unpack_3bit(x[ib].qs, x[ib].signs, (int)(i0 + 2));
+    uint8_t i3v = unpack_3bit(x[ib].qs, x[ib].signs, (int)(i0 + 3));
+
+    int beg = g * 8;
+    float rot[4] = {
+        (ISO3_QW_TABLE[beg+i0v] + ISO3_QX_TABLE[beg+i1v] + ISO3_QY_TABLE[beg+i2v] + ISO3_QZ_TABLE[beg+i3v]) * norm,
+        (ISO3_QW_TABLE[beg+i1v] - ISO3_QX_TABLE[beg+i0v] - ISO3_QY_TABLE[beg+i3v] + ISO3_QZ_TABLE[beg+i2v]) * norm,
+        (ISO3_QW_TABLE[beg+i2v] + ISO3_QX_TABLE[beg+i3v] - ISO3_QY_TABLE[beg+i0v] + ISO3_QZ_TABLE[beg+i1v]) * norm,
+        (ISO3_QW_TABLE[beg+i3v] - ISO3_QX_TABLE[beg+i2v] + ISO3_QY_TABLE[beg+i1v] - ISO3_QZ_TABLE[beg+i0v]) * norm,
+    };
+#ifdef FP16_AVAILABLE
+    if constexpr (std::is_same<T, half>::value) {
+        ((half2 *) dst)[0] = make_half2(rot[0], rot[1]);
+        ((half2 *) dst)[1] = make_half2(rot[2], rot[3]);
+    } else
+#endif
+    if constexpr (std::is_same<T, float>::value) {
+        ((float *) dst)[0] = rot[0]; ((float *) dst)[1] = rot[1];
+        ((float *) dst)[2] = rot[2]; ((float *) dst)[3] = rot[3];
+    }
+}
+
+// ========================================================================
+// dequantize_V for iso4_0 — quaternion rotation, 4-bit
+// ========================================================================
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_iso4_0(
+    const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    static_assert(ne == 4, "iso4 dequantize_V requires ne=4");
+    const block_planar4_0 * x = (const block_planar4_0 *) vx;
+    const int64_t ib = i0 / QK_ISO4;
+    const float norm = __half2float(x[ib].norm);
+
+    int g = (int)(i0 % QK_ISO4) / 4;
+    uint8_t i0v = unpack_4bit(x[ib].qs, (int)(i0 + 0));
+    uint8_t i1v = unpack_4bit(x[ib].qs, (int)(i0 + 1));
+    uint8_t i2v = unpack_4bit(x[ib].qs, (int)(i0 + 2));
+    uint8_t i3v = unpack_4bit(x[ib].qs, (int)(i0 + 3));
+
+    int beg = g * 16;
+    float rot[4] = {
+        (ISO4_QW_TABLE[beg+i0v] + ISO4_QX_TABLE[beg+i1v] + ISO4_QY_TABLE[beg+i2v] + ISO4_QZ_TABLE[beg+i3v]) * norm,
+        (ISO4_QW_TABLE[beg+i1v] - ISO4_QX_TABLE[beg+i0v] - ISO4_QY_TABLE[beg+i3v] + ISO4_QZ_TABLE[beg+i2v]) * norm,
+        (ISO4_QW_TABLE[beg+i2v] + ISO4_QX_TABLE[beg+i3v] - ISO4_QY_TABLE[beg+i0v] + ISO4_QZ_TABLE[beg+i1v]) * norm,
+        (ISO4_QW_TABLE[beg+i3v] - ISO4_QX_TABLE[beg+i2v] + ISO4_QY_TABLE[beg+i1v] - ISO4_QZ_TABLE[beg+i0v]) * norm,
+    };
+#ifdef FP16_AVAILABLE
+    if constexpr (std::is_same<T, half>::value) {
+        ((half2 *) dst)[0] = make_half2(rot[0], rot[1]);
+        ((half2 *) dst)[1] = make_half2(rot[2], rot[3]);
+    } else
+#endif
+    if constexpr (std::is_same<T, float>::value) {
+        ((float *) dst)[0] = rot[0]; ((float *) dst)[1] = rot[1];
+        ((float *) dst)[2] = rot[2]; ((float *) dst)[3] = rot[3];
+    }
+}
+
 template <ggml_type type_K, int D, int nthreads>
 constexpr __device__ vec_dot_KQ_t get_vec_dot_KQ() {
     if constexpr (type_K == GGML_TYPE_F16) {
@@ -633,6 +982,14 @@ constexpr __device__ vec_dot_KQ_t get_vec_dot_KQ() {
         return vec_dot_fattn_vec_KQ_q8_0<D, nthreads>;
     } else if constexpr (type_K == GGML_TYPE_BF16) {
         return vec_dot_fattn_vec_KQ_bf16<D, nthreads>;
+    } else if constexpr (type_K == GGML_TYPE_PLANAR3_0) {
+        return vec_dot_fattn_vec_KQ_planar3_0<D, nthreads>;
+    } else if constexpr (type_K == GGML_TYPE_ISO3_0) {
+        return vec_dot_fattn_vec_KQ_iso3_0<D, nthreads>;
+    } else if constexpr (type_K == GGML_TYPE_PLANAR4_0) {
+        return vec_dot_fattn_vec_KQ_planar4_0<D, nthreads>;
+    } else if constexpr (type_K == GGML_TYPE_ISO4_0) {
+        return vec_dot_fattn_vec_KQ_iso4_0<D, nthreads>;
     } else {
         static_assert(type_K == -1, "bad type");
         return nullptr;
@@ -655,6 +1012,14 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
         return dequantize_V_q8_0<T, ne>;
     } else if constexpr (type_V == GGML_TYPE_BF16) {
         return dequantize_V_bf16<float, ne>;
+    } else if constexpr (type_V == GGML_TYPE_PLANAR3_0) {
+        return dequantize_V_planar3_0<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_PLANAR4_0) {
+        return dequantize_V_planar4_0<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_ISO3_0) {
+        return dequantize_V_iso3_0<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_ISO4_0) {
+        return dequantize_V_iso4_0<T, ne>;
     } else {
         static_assert(type_V == -1, "bad type");
         return nullptr;
