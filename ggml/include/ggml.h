@@ -428,8 +428,10 @@ extern "C" {
         // GGML_TYPE_IQ4_NL_8_8 = 38,
         GGML_TYPE_MXFP4   = 39, // MXFP4 (1 block)
         GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
-        GGML_TYPE_Q1_0    = 41,
-        GGML_TYPE_COUNT   = 42,
+        GGML_TYPE_PLANAR3_0 = 41, // PlanarQuant 3-bit KV cache: 2D Givens rotation + 2-bit scalar + 1-bit QJL
+        GGML_TYPE_ISO3_0 = 42, // IsoQuant 3-bit KV cache: quaternion 4D rotation + 2-bit scalar + 1-bit QJL
+        GGML_TYPE_Q1_0    = 43,
+        GGML_TYPE_COUNT   = 44,
     };
 
     // precision
