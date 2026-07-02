@@ -441,6 +441,8 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
         case GGML_TYPE_Q8_0:
         case GGML_TYPE_BF16:
         case GGML_TYPE_IQ4_NL:
+        case GGML_TYPE_PLANAR3_0:
+        case GGML_TYPE_ISO3_0:
             break;
         default:
             return BEST_FATTN_KERNEL_NONE;
