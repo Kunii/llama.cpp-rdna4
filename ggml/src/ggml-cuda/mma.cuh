@@ -1317,13 +1317,15 @@ namespace ggml_cuda_mma {
 #elif defined(AMD_WMMA_AVAILABLE)
         using int32x8_t = __attribute__((__vector_size__(8 * sizeof(int)))) int;
         int32x8_t * acc = (int32x8_t *) D.x;
-#if defined(RDNA4)
-        using int32x2_t = __attribute__((__vector_size__(2 * sizeof(int)))) int;
-        int32x2_t * a_vec = (int32x2_t *) A.x;
-        int32x2_t * b_vec = (int32x2_t *) B.x;
-        acc[0] = __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32_gfx12(true, a_vec[0], true, b_vec[0], acc[0], true);
-        acc[0] = __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32_gfx12(true, a_vec[1], true, b_vec[1], acc[0], true);
-#elif defined(RDNA3)
+#if defined(RDNA4) && defined(MMQ_IU4_ENABLE)
+        // IU4: 4 scalar ints × 8×4-bit packed per thread (ne=4)
+        const int * a_ptr = (const int *)A.x;
+        const int * b_ptr = (const int *)B.x;
+        acc[0] = __builtin_amdgcn_wmma_i32_16x16x16_iu4_w32_gfx12(true, a_ptr[0], true, b_ptr[0], acc[0], true);
+        acc[0] = __builtin_amdgcn_wmma_i32_16x16x16_iu4_w32_gfx12(true, a_ptr[1], true, b_ptr[1], acc[0], true);
+        acc[0] = __builtin_amdgcn_wmma_i32_16x16x16_iu4_w32_gfx12(true, a_ptr[2], true, b_ptr[2], acc[0], true);
+        acc[0] = __builtin_amdgcn_wmma_i32_16x16x16_iu4_w32_gfx12(true, a_ptr[3], true, b_ptr[3], acc[0], true);
+#elif defined(RDNA4)
         using int32x4_t = __attribute__((__vector_size__(4 * sizeof(int)))) int;
         int32x4_t * a_vec = (int32x4_t *) A.x;
         int32x4_t * b_vec = (int32x4_t *) B.x;
@@ -1417,6 +1419,23 @@ namespace ggml_cuda_mma {
         GGML_UNUSED_VARS(D, A, B);
         NO_DEVICE_CODE;
 #endif // TURING_MMA_AVAILABLE
+    }
+
+    template <data_layout dl_d, data_layout dl_ab>
+    static __device__ __forceinline__ void mma(
+            tile<16, 16, int, dl_d> & D, const tile<16, 2, int, dl_ab> & A, const tile<16, 2, int, dl_ab> & B) {
+#if defined(AMD_WMMA_AVAILABLE) && defined(RDNA4)
+        // IU4: 8 × 4-bit per int32. tile<16,2,int> has ne=1 (16*2/32=1) per thread
+        // 1 scalar int = 8×4-bit values = K=16 per call across the warp
+        using int32x8_t = __attribute__((__vector_size__(8 * sizeof(int)))) int;
+        int32x8_t * acc = (int32x8_t *) D.x;
+        acc[0] = __builtin_amdgcn_wmma_i32_16x16x16_iu4_w32_gfx12(true, A.x[0], true, B.x[0], acc[0], true);
+#else
+        GGML_UNUSED(D);
+        GGML_UNUSED(A);
+        GGML_UNUSED(B);
+        NO_DEVICE_CODE;
+#endif // AMD_WMMA_AVAILABLE && RDNA4
     }
 
     template <data_layout dl_d, data_layout dl_ab>
