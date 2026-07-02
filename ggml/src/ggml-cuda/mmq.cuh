@@ -1367,7 +1367,7 @@ static __device__ __forceinline__ void vec_dot_q8_0_q8_1_iu4(
 
     const int i0 = (threadIdx.y / ntx) * rows_per_warp;
 
-    for (int k01 = 0; k01 < MMQ_TILE_NE_K; k01 += QI8_0) {
+    for (int k01 = 0; k01 < MMQ_TILE_NE_K / 2; k01 += QI8_0) {
         const int k0 = k00 + k01;
         tile_A A[ntx];
         #pragma unroll
@@ -3388,10 +3388,11 @@ struct mmq_type_traits<mmq_x, mmq_y, need_check, GGML_TYPE_Q1_0> {
 template <int mmq_x, int mmq_y, bool need_check>
 struct mmq_type_traits<mmq_x, mmq_y, need_check, GGML_TYPE_Q4_0> {
     static constexpr int              vdr          = VDR_Q4_0_Q8_1_MMQ;
-    static constexpr load_tiles_mmq_t load_tiles   = load_tiles_q4_0<mmq_y, need_check>;
 #if defined(MMQ_IU4_ENABLE)
+    static constexpr load_tiles_mmq_t load_tiles   = load_tiles_q4_0_iu4<mmq_y, need_check>;
     static constexpr vec_dot_mmq_t    vec_dot_mma  = vec_dot_q8_0_q8_1_iu4<mmq_x, mmq_y, MMQ_Q8_1_DS_LAYOUT_DS4>;
 #else
+    static constexpr load_tiles_mmq_t load_tiles   = load_tiles_q4_0<mmq_y, need_check>;
     static constexpr vec_dot_mmq_t    vec_dot_mma  = vec_dot_q8_0_q8_1_mma<mmq_x, mmq_y, MMQ_Q8_1_DS_LAYOUT_DS4>;
 #endif
     static constexpr vec_dot_mmq_t    vec_dot_dp4a = vec_dot_q4_0_q8_1_dp4a<mmq_x, mmq_y>;
@@ -3400,10 +3401,11 @@ struct mmq_type_traits<mmq_x, mmq_y, need_check, GGML_TYPE_Q4_0> {
 template <int mmq_x, int mmq_y, bool need_check>
 struct mmq_type_traits<mmq_x, mmq_y, need_check, GGML_TYPE_Q4_1> {
     static constexpr int              vdr          = VDR_Q4_1_Q8_1_MMQ;
-    static constexpr load_tiles_mmq_t load_tiles   = load_tiles_q4_1<mmq_y, need_check>;
 #if defined(MMQ_IU4_ENABLE)
+    static constexpr load_tiles_mmq_t load_tiles   = load_tiles_q4_0_iu4<mmq_y, need_check>;
     static constexpr vec_dot_mmq_t    vec_dot_mma  = vec_dot_q8_0_q8_1_iu4<mmq_x, mmq_y, MMQ_Q8_1_DS_LAYOUT_DS4>;
 #else
+    static constexpr load_tiles_mmq_t load_tiles   = load_tiles_q4_1<mmq_y, need_check>;
     static constexpr vec_dot_mmq_t    vec_dot_mma  = vec_dot_q8_1_q8_1_mma<mmq_x, mmq_y>;
 #endif
     static constexpr vec_dot_mmq_t    vec_dot_dp4a = vec_dot_q4_1_q8_1_dp4a<mmq_x, mmq_y>;
@@ -3574,7 +3576,11 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
     constexpr int              nwarps     = mmq_get_nwarps_device();
     constexpr int              qk         = ggml_cuda_type_traits<type>::qk;
     constexpr int              mmq_y      = get_mmq_y_device();
+#if defined(MMQ_IU4_ENABLE) && (type == GGML_TYPE_Q4_0 || type == GGML_TYPE_Q4_1)
+    constexpr load_tiles_mmq_t load_tiles = load_tiles_q4_0_iu4<mmq_y, need_check>;
+#else
     constexpr load_tiles_mmq_t load_tiles = mmq_type_traits<mmq_x, mmq_y, need_check, type>::load_tiles;
+#endif
 
     extern __shared__ int data_mul_mat_q[];
     int * tile_y = data_mul_mat_q + mmq_x;
