@@ -124,6 +124,11 @@ void ggml_cuda_mul_mat_q(
 
     // TODO: tighter pool buffer size vs q8 path
     const bool use_native_fp4 = blackwell_mma_available(cc) && (src0->type == GGML_TYPE_MXFP4 || src0->type == GGML_TYPE_NVFP4);
+#if defined(MMQ_IU4_ENABLE)
+    const bool use_iu4 = (src0->type == GGML_TYPE_Q4_0 || src0->type == GGML_TYPE_Q4_1);
+#else
+    const bool use_iu4 = false;
+#endif
 
     if (!ids) {
         const size_t nbytes_src1_q8_1 = ne13*ne12 * ne11*ne10_padded * sizeof(block_q8_1)/QK8_1 +
@@ -139,6 +144,9 @@ void ggml_cuda_mul_mat_q(
                 quantize_mmq_fp4_cuda(src1_d, nullptr, src1_q8_1.get(), src0->type, ne10, s11, s12, s13, ne10_padded,
                                         ne11, ne12, ne13, stream);
 
+            } else if (use_iu4) {
+                quantize_mmq_q4_0_cuda(src1_d, nullptr, src1_q8_1.get(), src0->type, ne10, s11, s12, s13, ne10_padded,
+                                       ne11, ne12, ne13, stream);
             } else {
                 quantize_mmq_q8_1_cuda(src1_d, nullptr, src1_q8_1.get(), src0->type, ne10, s11, s12, s13, ne10_padded,
                                        ne11, ne12, ne13, stream);

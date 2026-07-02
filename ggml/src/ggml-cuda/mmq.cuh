@@ -223,6 +223,10 @@ static constexpr __host__ __device__ tile_x_sizes mmq_get_dp4a_tile_x_sizes(ggml
 #define MMQ_MMA_TILE_X_K_Q2_K  (2*MMQ_TILE_NE_K + MMQ_TILE_NE_K                           + 4)
 #define MMQ_MMA_TILE_X_K_Q3_K  (2*MMQ_TILE_NE_K + MMQ_TILE_NE_K/2                         + 4)
 #define MMQ_MMA_TILE_X_K_Q6_K  (2*MMQ_TILE_NE_K + MMQ_TILE_NE_K/QI6_K   + MMQ_TILE_NE_K/8 + 7)
+#if defined(MMQ_IU4_ENABLE)
+#define MMQ_MMA_TILE_X_K_IU4   (MMQ_TILE_NE_K + MMQ_TILE_NE_K/QI8_0 + 0)
+static_assert(MMQ_MMA_TILE_X_K_IU4 % 8 == 4, "Wrong padding for IU4. 36 %% 8 = 4.");
+#endif
 
 static_assert(MMQ_MMA_TILE_X_K_Q8_0 % 8 == 4, "Wrong padding.");
 static_assert(MMQ_MMA_TILE_X_K_Q8_1 % 8 == 4, "Wrong padding.");
@@ -237,8 +241,18 @@ static_assert(MMQ_MMA_TILE_X_K_NVFP4 % 8 == 4, "Wrong padding.");
 static constexpr __host__ __device__ int mmq_get_mma_tile_x_k(ggml_type type) {
     switch (type) {
         case GGML_TYPE_Q1_0:    return MMQ_MMA_TILE_X_K_Q8_0;
-        case GGML_TYPE_Q4_0:    return MMQ_MMA_TILE_X_K_Q8_0;
-        case GGML_TYPE_Q4_1:    return MMQ_MMA_TILE_X_K_Q8_1;
+        case GGML_TYPE_Q4_0:
+#if defined(MMQ_IU4_ENABLE)
+            return MMQ_MMA_TILE_X_K_IU4;
+#else
+            return MMQ_MMA_TILE_X_K_Q8_0;
+#endif
+        case GGML_TYPE_Q4_1:
+#if defined(MMQ_IU4_ENABLE)
+            return MMQ_MMA_TILE_X_K_IU4;
+#else
+            return MMQ_MMA_TILE_X_K_Q8_1;
+#endif
         case GGML_TYPE_Q5_0:    return MMQ_MMA_TILE_X_K_Q8_0;
         case GGML_TYPE_Q5_1:    return MMQ_MMA_TILE_X_K_Q8_1;
         case GGML_TYPE_Q8_0:    return MMQ_MMA_TILE_X_K_Q8_0;
@@ -455,6 +469,42 @@ template <int mmq_y, bool need_check> static __device__ __forceinline__ void loa
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
     }
 }
+
+
+#if defined(MMQ_IU4_ENABLE)
+// IU4 variant: copy q4_0 nibbles as packed 4-bit (no INT8 expansion, half stride 40 vs 76)
+template <int mmq_y, bool need_check> static __device__ __forceinline__ void load_tiles_q4_0_iu4(
+    const char * __restrict__ x, int * __restrict__ x_tile, const int kbx0, const int i_max, const int stride) {
+    constexpr int warp_size = ggml_cuda_get_physical_warp_size();
+
+    int   * x_qs = (int   *)  x_tile;
+    float * x_df = (float *) (x_qs + MMQ_TILE_NE_K);
+
+    constexpr int threads_per_row = MMQ_ITER_K / (4 * QR4_0);
+    constexpr int nrows = warp_size / threads_per_row;
+    const int kbx  = threadIdx.x / QI4_0;
+    const int kqsx = threadIdx.x % QI4_0;
+
+    #pragma unroll
+    for (int i0 = 0; i0 < mmq_y; i0 += nrows*8) {
+        int i = i0 + (threadIdx.y*nrows + threadIdx.x/threads_per_row);
+        if (need_check) { i = min(i, i_max); }
+        const block_q4_0 * bxi = (const block_q4_0 *) x + kbx0 + i*stride + kbx;
+        const int qs_val = ((const int *)bxi->qs)[kqsx];
+        x_qs[i*MMQ_MMA_TILE_X_K_IU4 + kbx*4 + kqsx] = qs_val;
+    }
+    constexpr int blocks_per_tile_x_row = MMQ_TILE_NE_K / QI4_0;
+    constexpr int rows_per_warp = warp_size / blocks_per_tile_x_row;
+    const int kbxd = threadIdx.x % blocks_per_tile_x_row;
+    #pragma unroll
+    for (int i0 = 0; i0 < mmq_y; i0 += 8 * rows_per_warp) {
+        int i = i0 + threadIdx.y * rows_per_warp + threadIdx.x / blocks_per_tile_x_row;
+        if (need_check) { i = min(i, i_max); }
+        const block_q4_0 * bxi = (const block_q4_0 *) x + kbx0 + i*stride + kbxd;
+        x_df[i*MMQ_MMA_TILE_X_K_IU4 + kbxd] = bxi->d;
+    }
+}
+#endif // MMQ_IU4_ENABLE
 
 template <int mmq_x, int mmq_y>
 static __device__ __forceinline__ void vec_dot_q4_0_q8_1_dp4a(
@@ -1292,6 +1342,68 @@ static __device__ __forceinline__ void vec_dot_q8_0_q8_1_mma(
     }
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
 }
+#if defined(MMQ_IU4_ENABLE)
+// IU4 vec_dot: uses IU4 X tile stride, mma() resolves to IU4 when MMQ_IU4_ENABLE
+template <int mmq_x, int mmq_y, mmq_q8_1_ds_layout ds_layout>
+static __device__ __forceinline__ void vec_dot_q8_0_q8_1_iu4(
+    const int * __restrict__ x, const int * __restrict__ y, float * __restrict__ sum, const int k00) {
+#if defined(AMD_WMMA_AVAILABLE)
+    constexpr data_layout input_layout = get_input_data_layout();
+    typedef tile<16,  8, int, input_layout>        tile_A;
+    typedef tile<16,  8, int, input_layout>        tile_B;
+    typedef tile<16, 16, int, DATA_LAYOUT_J_MAJOR> tile_C;
+
+    constexpr int granularity = mmq_get_granularity_device(mmq_x);
+    constexpr int rows_per_warp = granularity;
+    constexpr int ntx = rows_per_warp/tile_C::I;
+
+    y += (threadIdx.y % ntx) * (tile_C::J*MMQ_TILE_Y_K);
+
+    const int   * x_qs = (const int   *) x;
+    const float * x_df = (const float *) x_qs + MMQ_TILE_NE_K;
+    const int   * y_qs = (const int   *) y + 4;
+    const float * y_df = (const float *) y;
+    const half2 * y_ds = (const half2 *) y;
+
+    const int i0 = (threadIdx.y / ntx) * rows_per_warp;
+
+    for (int k01 = 0; k01 < MMQ_TILE_NE_K; k01 += QI8_0) {
+        const int k0 = k00 + k01;
+        tile_A A[ntx];
+        #pragma unroll
+        for (int n = 0; n < ntx; ++n) {
+            load_ldmatrix(A[n], x_qs + (i0 + n*tile_A::I)*MMQ_MMA_TILE_X_K_IU4 + k0, MMQ_MMA_TILE_X_K_IU4);
+        }
+        #pragma unroll
+        for (int j0 = 0; j0 < mmq_x; j0 += ntx*tile_C::J) {
+            tile_B B;
+            load_ldmatrix(B, y_qs + j0*MMQ_TILE_Y_K + k01, MMQ_TILE_Y_K);
+            float dB;
+            const int j = j0 + tile_C::get_j(0);
+            if (ds_layout == MMQ_Q8_1_DS_LAYOUT_D4) {
+                dB = y_df[j*MMQ_TILE_Y_K + k01/QI8_1];
+            } else {
+                dB = __low2float(y_ds[j*MMQ_TILE_Y_K + k01/QI8_1]);
+            }
+            #pragma unroll
+            for (int n = 0; n < ntx; ++n) {
+                tile_C C;
+                mma(C, A[n], B);
+                #pragma unroll
+                for (int l = 0; l < tile_C::ne; ++l) {
+                    const int i = i0 + n*tile_A::I + tile_C::get_i(l);
+                    const float dA = x_df[i*MMQ_MMA_TILE_X_K_IU4 + k0/QI8_0];
+                    sum[(j0/tile_C::J + n)*tile_C::ne + l] += C.x[l]*dA*dB;
+                }
+            }
+        }
+    }
+#else
+    NO_DEVICE_CODE;
+#endif
+}
+#endif // MMQ_IU4_ENABLE
+
 
 
 template <int mmq_x, int mmq_y>
@@ -3277,7 +3389,11 @@ template <int mmq_x, int mmq_y, bool need_check>
 struct mmq_type_traits<mmq_x, mmq_y, need_check, GGML_TYPE_Q4_0> {
     static constexpr int              vdr          = VDR_Q4_0_Q8_1_MMQ;
     static constexpr load_tiles_mmq_t load_tiles   = load_tiles_q4_0<mmq_y, need_check>;
+#if defined(MMQ_IU4_ENABLE)
+    static constexpr vec_dot_mmq_t    vec_dot_mma  = vec_dot_q8_0_q8_1_iu4<mmq_x, mmq_y, MMQ_Q8_1_DS_LAYOUT_DS4>;
+#else
     static constexpr vec_dot_mmq_t    vec_dot_mma  = vec_dot_q8_0_q8_1_mma<mmq_x, mmq_y, MMQ_Q8_1_DS_LAYOUT_DS4>;
+#endif
     static constexpr vec_dot_mmq_t    vec_dot_dp4a = vec_dot_q4_0_q8_1_dp4a<mmq_x, mmq_y>;
 };
 
@@ -3285,7 +3401,11 @@ template <int mmq_x, int mmq_y, bool need_check>
 struct mmq_type_traits<mmq_x, mmq_y, need_check, GGML_TYPE_Q4_1> {
     static constexpr int              vdr          = VDR_Q4_1_Q8_1_MMQ;
     static constexpr load_tiles_mmq_t load_tiles   = load_tiles_q4_1<mmq_y, need_check>;
+#if defined(MMQ_IU4_ENABLE)
+    static constexpr vec_dot_mmq_t    vec_dot_mma  = vec_dot_q8_0_q8_1_iu4<mmq_x, mmq_y, MMQ_Q8_1_DS_LAYOUT_DS4>;
+#else
     static constexpr vec_dot_mmq_t    vec_dot_mma  = vec_dot_q8_1_q8_1_mma<mmq_x, mmq_y>;
+#endif
     static constexpr vec_dot_mmq_t    vec_dot_dp4a = vec_dot_q4_1_q8_1_dp4a<mmq_x, mmq_y>;
 };
 
