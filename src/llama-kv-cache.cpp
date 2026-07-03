@@ -1267,10 +1267,14 @@ ggml_tensor * llama_kv_cache::get_k(ggml_context * ctx, int32_t il, uint32_t n_k
     assert(n_embd_k_gqa == hparams.n_embd_k_gqa(il));
 
     const uint32_t ns = sinfo.s1 - sinfo.s0 + 1;
+    const uint32_t n_embd_head_k = hparams.n_embd_head_k(il);
 
     return ggml_view_4d(ctx, k,
-            hparams.n_embd_head_k(il), hparams.n_head_kv(il), n_kv, ns,
-            ggml_row_size(k->type, hparams.n_embd_head_k(il)),
+            n_embd_head_k, hparams.n_head_kv(il), n_kv, ns,
+            // Per-head stride: ggml_row_size asserts ne % blck == 0 for quantized types.
+            // For types where blck_size > head_dim (e.g. planar3 with blck=128, head=64),
+            // compute the stride directly instead.
+            (int64_t)(ggml_type_size(k->type) * n_embd_head_k) / ggml_blck_size(k->type),
             ggml_row_size(k->type, n_embd_k_gqa),
             ggml_row_size(k->type, n_embd_k_gqa*kv_size),
             ggml_row_size(k->type, n_embd_k_gqa*kv_size)*sinfo.s0);
@@ -1293,19 +1297,21 @@ ggml_tensor * llama_kv_cache::get_v(ggml_context * ctx, int32_t il, uint32_t n_k
         // note: v->nb[1] <= v->nb[2]
         return ggml_view_4d(ctx, v,
                 hparams.n_embd_head_v(il), hparams.n_head_kv(il), n_kv, ns,
-                ggml_row_size(v->type, hparams.n_embd_head_v(il)),          // v->nb[1]
-                ggml_row_size(v->type, n_embd_v_gqa),                   // v->nb[2]
-                ggml_row_size(v->type, n_embd_v_gqa*kv_size),           // v->nb[3]
+                // Per-head stride: compute inline for types where blck_size > head_dim
+                (int64_t)(ggml_type_size(v->type) * hparams.n_embd_head_v(il)) / ggml_blck_size(v->type),
+                ggml_row_size(v->type, n_embd_v_gqa),
+                ggml_row_size(v->type, n_embd_v_gqa*kv_size),
                 ggml_row_size(v->type, n_embd_v_gqa*kv_size)*sinfo.s0);
     }
 
     // note: v->nb[1] > v->nb[2]
     return ggml_view_4d(ctx, v,
             n_kv, hparams.n_head_kv(il), hparams.n_embd_head_v(il), ns,
-            ggml_row_size(v->type, kv_size*hparams.n_embd_head_v(il)),  // v->nb[1]
-            ggml_row_size(v->type, kv_size),                        // v->nb[2]
-            ggml_row_size(v->type, kv_size*n_embd_v_gqa),           // v->nb[3]
-            ggml_row_size(v->type, kv_size*n_embd_v_gqa)*sinfo.s0);
+            // Transposed stride: the view swaps dims so this uses kv_size*head_dim
+            (int64_t)(ggml_type_size(v->type) * kv_size * hparams.n_embd_head_v(il)) / ggml_blck_size(v->type),
+            (int64_t)(ggml_type_size(v->type) * kv_size) / ggml_blck_size(v->type),
+            (int64_t)(ggml_type_size(v->type) * kv_size * n_embd_v_gqa) / ggml_blck_size(v->type),
+            (int64_t)(ggml_type_size(v->type) * kv_size * n_embd_v_gqa) / ggml_blck_size(v->type) * sinfo.s0);
 }
 
 ggml_tensor * llama_kv_cache::cpy_k(ggml_context * ctx, ggml_tensor * k_cur, ggml_tensor * k_idxs, int32_t il, const slot_info & sinfo) const {

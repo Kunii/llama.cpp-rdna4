@@ -3529,9 +3529,9 @@ llama_context * llama_init_from_model(
         const uint32_t blck_size = ggml_blck_size(params.type_k);
         for (uint32_t il = 0; il < model->hparams.n_layer(); ++il) {
             if (model->hparams.n_embd_head_k(il) % blck_size != 0) {
-                LLAMA_LOG_ERROR("%s: K cache type %s with block size %u does not divide n_embd_head_k=%u\n",
-                    __func__, ggml_type_name(params.type_k), blck_size, model->hparams.n_embd_head_k(il));
-                return nullptr;
+                const uint32_t padded = ((model->hparams.n_embd_head_k(il) + blck_size - 1) / blck_size) * blck_size;
+                LLAMA_LOG_WARN("%s: K cache type %s block size %u > n_embd_head_k=%u. Padding to %u.\n",
+                    __func__, ggml_type_name(params.type_k), blck_size, model->hparams.n_embd_head_k(il), padded);
             }
         }
     }
@@ -3540,9 +3540,9 @@ llama_context * llama_init_from_model(
         const uint32_t blck_size = ggml_blck_size(params.type_v);
         for (uint32_t il = 0; il < model->hparams.n_layer(); ++il) {
             if (model->hparams.n_embd_head_v(il) % blck_size != 0) {
-                LLAMA_LOG_ERROR("%s: V cache type %s with block size %u does not divide n_embd_head_v=%u\n",
-                    __func__, ggml_type_name(params.type_v), blck_size, model->hparams.n_embd_head_v(il));
-                return nullptr;
+                const uint32_t padded = ((model->hparams.n_embd_head_v(il) + blck_size - 1) / blck_size) * blck_size;
+                LLAMA_LOG_WARN("%s: V cache type %s block size %u > n_embd_head_v=%u. Padding to %u.\n",
+                    __func__, ggml_type_name(params.type_v), blck_size, model->hparams.n_embd_head_v(il), padded);
             }
         }
     }
