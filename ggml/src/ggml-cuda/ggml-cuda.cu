@@ -5137,6 +5137,11 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                         return false;
                     }
                 }
+                // GPU-only KV cache types (planar/iso) — only valid with f16/f32 activations
+                if (a->type == GGML_TYPE_PLANAR3_0 || a->type == GGML_TYPE_ISO3_0 ||
+                    a->type == GGML_TYPE_PLANAR4_0 || a->type == GGML_TYPE_ISO4_0) {
+                    return true;
+                }
                 if (b->type == GGML_TYPE_F16 && a->type != GGML_TYPE_F16) {
                     return false;
                 }

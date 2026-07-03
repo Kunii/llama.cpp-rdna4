@@ -1173,6 +1173,10 @@ static void ggml_compute_forward_mul_mat_one_chunk(
     const bool src1_cont = ggml_is_contiguous(src1);
 
     ggml_vec_dot_t const vec_dot      = type_traits_cpu[type].vec_dot;
+    if (!vec_dot) {
+        // GPU-only KV cache types (planar/iso) have no CPU vec_dot
+        return;
+    }
     enum ggml_type const vec_dot_type = type_traits_cpu[type].vec_dot_type;
 
     // broadcast factors
