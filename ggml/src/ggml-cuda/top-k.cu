@@ -1,5 +1,6 @@
 #include "argsort.cuh"
 #include "top-k.cuh"
+#include "top-k-select.cuh"
 
 #ifdef GGML_CUDA_USE_CUB
 #    include <cub/cub.cuh>
@@ -87,10 +88,10 @@ void ggml_cuda_op_top_k(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     CUDA_CHECK(cudaMemcpy2DAsync(dst_d, k * sizeof(int), tmp_dst, ncols * sizeof(int), k * sizeof(int), nrows,
                                  cudaMemcpyDeviceToDevice, stream));
 #else                             // GGML_CUDA_USE_CUB
-    ggml_cuda_pool_alloc<int> temp_dst_alloc(pool, ncols * nrows);
-    int *                     tmp_dst = temp_dst_alloc.get();
-    argsort_f32_i32_cuda_bitonic(src0_d, tmp_dst, ncols, nrows, GGML_SORT_ORDER_DESC, stream);
-    CUDA_CHECK(cudaMemcpy2DAsync(dst_d, k * sizeof(int), tmp_dst, ncols * sizeof(int), k * sizeof(int), nrows,
-                                 cudaMemcpyDeviceToDevice, stream));
+    // HIP/RDNA4 path: use register-based top-k selection instead of bitonic sort.
+    // The bitonic sort fallback requires ~512KB of shared memory for 128K vocab,
+    // which exceeds the RDNA4 LDS limit (64KB). Our kernel works within LDS limits
+    // by using per-thread register heaps + a shared-memory merge.
+    ggml_cuda_top_k_select(src0_d, dst_d, ncols, nrows, k, stream);
 #endif
 }
