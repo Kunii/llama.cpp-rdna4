@@ -118,9 +118,10 @@ void ggml_cuda_mul_mat_q(
     const int64_t s03 = src0->nb[3] / ts_src0;
     const int64_t s3  =  dst->nb[3] / ts_dst;
 
-    const bool use_stream_k = (GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_VOLTA)
+    const bool use_stream_k = ((GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_VOLTA)
                             || GGML_CUDA_CC_IS_CDNA(cc)
-                            || GGML_CUDA_CC_IS_RDNA4(cc);
+                            || GGML_CUDA_CC_IS_RDNA4(cc))
+                            && getenv("GGML_CUDA_RDNA4_NO_STREAMK") == nullptr;
 
     // TODO: tighter pool buffer size vs q8 path
     const bool use_native_fp4 = blackwell_mma_available(cc) && (src0->type == GGML_TYPE_MXFP4 || src0->type == GGML_TYPE_NVFP4);
@@ -261,7 +262,8 @@ void ggml_cuda_op_mul_mat_q(
     const bool use_stream_k = ((GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) >= GGML_CUDA_CC_VOLTA)
                             || GGML_CUDA_CC_IS_CDNA(cc)
                             || GGML_CUDA_CC_IS_RDNA4(cc))
-                            && src1_ncols == ne11;
+                            && src1_ncols == ne11
+                            && getenv("GGML_CUDA_RDNA4_NO_STREAMK") == nullptr;
     const mmq_args args = {
         src0_dd_i, src0->type, (const int *) src1_ddq_i, nullptr, nullptr, dst_dd_i,
         ne00, row_diff, src1_ncols, stride01, ne11, nrows_dst,
@@ -371,6 +373,17 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
                 default:
                     return true;
             }
+        }
+
+        // RDNA4 (gfx1201) WMMA int MMQ is currently broken: the fork's RDNA4 int
+        // mma() overload (mma.cuh) feeds only 2 of 4 tile vectors to
+        // __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32_gfx12 and uses a row-major
+        // tile<16,16,int> layout that does not match the gfx12 column-major D
+        // fragment (lane=col, 8 rows/lane). This produces NaN/garbage for the
+        // high-lane output columns (observed: n>=9 fails, n<=8 passes). Fall back
+        // to the dequant + hipBLAS path, which is correct on gfx1201.
+        if (GGML_CUDA_CC_IS_RDNA4(cc)) {
+            return false;
         }
 
         // For RDNA4 MMQ is consistently faster than dequantization + hipBLAS:
