@@ -108,3 +108,30 @@ Derived Hermes skill for future KV type additions:
 - Commits pushed directly to `master` (private fork, no reviews)
 - One logical change per commit
 - Commit messages: concise, no unicode (ASCII only)
+
+---
+
+## Performance
+
+### IU4 WMMA mul_mat_q (q4_0/q4_1 on gfx1201)
+
+| Test | IU4 (t/s) | IU8 (t/s) | Delta |
+|------|-----------|-----------|-------|
+| pp64  | 2212 | 1904 | **+16.2%** |
+| pp128 | 3031 | 2953 | **+2.6%** |
+| pp256 | 3604 | 3317 | **+8.6%** |
+| tg64  | 84.5 | 84.1 | flat |
+
+Build with `-DMMQ_IU4_ENABLE=OFF` to disable and compare.
+
+### Non-FA planar/iso KV types
+
+All 4 planar/iso KV types work with `--flash-attn off` + f16 V. Throughput ~44-50% of f16 FA baseline. Commit `53d113002`.
+
+---
+
+## Known RDNA4 Limitations
+
+- **No TOP_K sampler op** on gfx1201. Always omit `--top-k` in `llama-server` / `llama-cli`.
+- **AMDGPU workqueue hogging**: `svm_range_deferred_list_work [amdgpu]` can cause kernel panics under sustained GPU load. Kernel suggests switching to `WQ_UNBOUND`.
+- **Symmetric quantized V** (q4_0+q4_0 etc.) requires FlashAttention (`V cache quantization requires flash_attn`).
