@@ -180,18 +180,13 @@ if (GGML_HIP_ROCWMMA_FATTN)
     add_compile_definitions(GGML_HIP_ROCWMMA_FATTN)
 endif()
 
-# RDNA4 architecture detection — enables AMD_WMMA_AVAILABLE
-if (CMAKE_HIP_ARCHITECTURES MATCHES "gfx12")
-    message(STATUS "RDNA4 detected by gfx12 arch — enabling WMMA native compute")
-    add_compile_definitions(RDNA4)
-    # Enable IU4 WMMA path for q4_0/q4_1 (2× compute density, 50% less SMEM)
-    if (NOT DEFINED MMQ_IU4_ENABLE OR MMQ_IU4_ENABLE)
-        add_compile_definitions(MMQ_IU4_ENABLE)
-    endif()
-elseif (CMAKE_HIP_ARCHITECTURES MATCHES "gfx11")
-    message(STATUS "RDNA3 detected by gfx11 arch — enabling WMMA native compute")
-    add_compile_definitions(RDNA3)
-endif()
+# Per-architecture macros (RDNA4, RDNA3, MMQ_IU4_ENABLE) are set in
+# ggml-cuda/vendors/hip.h via __GFX12__ / __GFX11__ builtins, which are resolved
+# correctly PER OFFLOAD-ARCH. Do NOT add_compile_definitions() for them here:
+# that applies the define to the WHOLE target, leaking e.g. RDNA4 (and its
+# gfx12-only __builtin_amdgcn_*_gfx12 instructions) into the gfx1031/RDNA2 code
+# object and breaking multi-arch builds. The header guard is the correct,
+# per-arch mechanism.
 
 if (NOT GGML_HIP_MMQ_MFMA)
     add_compile_definitions(GGML_HIP_NO_MMQ_MFMA)

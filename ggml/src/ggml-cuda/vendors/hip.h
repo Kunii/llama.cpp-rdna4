@@ -214,6 +214,13 @@
 
 #if defined(__GFX12__)
 #define RDNA4
+// IU4 WMMA path for q4_0/q4_1 (2× compute density, 50% less SMEM).
+// Per-arch: only set on gfx12. Allow an explicit -DMMQ_IU4_ENABLE (incl. 0) to
+// override. Set here (not in CMake) so multi-arch builds don't leak it onto
+// non-gfx12 code objects.
+#ifndef MMQ_IU4_ENABLE
+#define MMQ_IU4_ENABLE
+#endif // MMQ_IU4_ENABLE
 #endif // defined(__GFX12__)
 
 #if defined(__GFX11__)
