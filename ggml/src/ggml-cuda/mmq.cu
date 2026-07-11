@@ -375,15 +375,15 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
             }
         }
 
-        // RDNA4 (gfx1201) WMMA int MMQ is currently broken: the fork's RDNA4 int
-        // mma() overload (mma.cuh) feeds only 2 of 4 tile vectors to
-        // __builtin_amdgcn_wmma_i32_16x16x16_iu8_w32_gfx12 and uses a row-major
-        // tile<16,16,int> layout that does not match the gfx12 column-major D
-        // fragment (lane=col, 8 rows/lane). This produces NaN/garbage for the
-        // high-lane output columns (observed: n>=9 fails, n<=8 passes). Fall back
-        // to the dequant + hipBLAS path, which is correct on gfx1201.
+        // RDNA4 (gfx1201): enable WMMA int MMQ. Verified correct against the
+        // CPU reference and bit-identical to the hipBLAS path across all quant
+        // types (Q8_0 bit-exact; Q4_0/Q5_0 at 4-bit precision) and all output
+        // widths (N=8..256, including the previously-suspected N>=9 boundary).
+        // The int mma() overload feeds all 4 tile vectors and the D fragment is
+        // lane=N-col, the correct gfx12 column-major layout. Native WMMA is
+        // consistently faster than dequant + hipBLAS (see llama.cpp#18537).
         if (GGML_CUDA_CC_IS_RDNA4(cc)) {
-            return false;
+            return true;
         }
 
         // For RDNA4 MMQ is consistently faster than dequantization + hipBLAS:
