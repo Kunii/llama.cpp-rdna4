@@ -375,15 +375,17 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11, int64_t
             }
         }
 
-        // RDNA4 (gfx1201): enable WMMA int MMQ. Verified correct against the
-        // CPU reference and bit-identical to the hipBLAS path across all quant
-        // types (Q8_0 bit-exact; Q4_0/Q5_0 at 4-bit precision) and all output
-        // widths (N=8..256, including the previously-suspected N>=9 boundary).
-        // The int mma() overload feeds all 4 tile vectors and the D fragment is
-        // lane=N-col, the correct gfx12 column-major layout. Native WMMA is
-        // consistently faster than dequant + hipBLAS (see llama.cpp#18537).
+        // RDNA4 (gfx1201): keep int WMMA MMQ DISABLED.
+        // Prefill (large-M) is correct and fast via this path, but the M=1
+        // decode (per-token generation) step produces empty/garbage tokens on
+        // gfx1201 — exposed by llama-cli (per-token decode) while llama-bench
+        // (speed only) and llama-server (batched decode) masked it. Verified:
+        // forcing hipBLAS (return false) makes llama-cli generation correct on
+        // ROCm0 with no prefill regression (9B pp512 ~3.6k t/s either way).
+        // TODO: fix the gfx12 column-major D-fragment / M=1 tile mapping in the
+        // WMMA decode path, then re-enable.
         if (GGML_CUDA_CC_IS_RDNA4(cc)) {
-            return true;
+            return false;
         }
 
         // For RDNA4 MMQ is consistently faster than dequantization + hipBLAS:
