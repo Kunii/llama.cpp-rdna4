@@ -548,7 +548,7 @@ template<int D, int nthreads>
 static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_iso4_0(
     const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
 
-    const block_planar4_0 * K = (const block_planar4_0 *) K_c;
+    const block_iso4_0 * K = (const block_iso4_0 *) K_c;
     GGML_UNUSED(Q_v);
     const float2 * Q_ds = (const float2 *) Q_ds_v;
 
@@ -1027,7 +1027,7 @@ template <typename T, int ne>
 static __device__ __forceinline__ void dequantize_V_iso4_0(
     const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
     static_assert(ne == 4, "iso4 dequantize_V requires ne=4");
-    const block_planar4_0 * x = (const block_planar4_0 *) vx;
+    const block_iso4_0 * x = (const block_iso4_0 *) vx;
     const int64_t ib = i0 / QK_ISO4;
     const float norm = __half2float(x[ib].norm);
 

@@ -65,7 +65,7 @@ test parameters:
   -sm, --split-mode <none|layer|row|tensor> (default: layer)
   -mg, --main-gpu <i>                       (default: 0)
   -nkvo, --no-kv-offload <0|1>              (default: 0)
-  -fa, --flash-attn <on|off|auto>           (default: auto)
+  -fa, --flash-attn <on|off|auto>           (default: on)
   -dev, --device <dev0/dev1/...>            (default: auto)
   -mmp, --mmap <0|1>                        (default: 1)
   -dio, --direct-io <0|1>                   (default: 0)
