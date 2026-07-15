@@ -63,21 +63,31 @@ graphify query "your question about the codebase"
 
 ---
 
-## Build config (RDNA4 / ROCm 7.2)
+## Build config (RDNA4 / ROCm 7.15)
 
-## Build config (RDNA4 / ROCm 7.2)
+> **Mandatory flags:** `GGML_CUDA_FA=ON` + `GGML_CUDA_FA_ALL_QUANTS=ON` are REQUIRED for
+> planar/iso KV-cache FlashAttention. Without them: no planar/iso VEC kernels, silent
+> fallback or `GGML_ABORT`. `GGML_CUDA=OFF` (HIP backend only). Build BOTH `llama-cli`
+> (testing) and `llama-server`.
 
 ```bash
 mkdir -p build-rdna4 && cd build-rdna4
 cmake .. \
-  -DCMAKE_HIP_COMPILER=/opt/rocm-7.2.4/lib/llvm/bin/clang++ \
+  -DCMAKE_BUILD_TYPE=Release \
   -DAMDGPU_TARGETS=gfx1201 \
+  -DCMAKE_HIP_COMPILER=/opt/rocm-7.15.0/lib/llvm/bin/clang++ \
+  -DCMAKE_INSTALL_RPATH=/opt/rocm-7.15.0/lib \
+  -DCMAKE_BUILD_RPATH=/opt/rocm-7.15.0/lib \
   -DGGML_HIP=ON \
   -DGGML_HIP_ROCWMMA_FATTN=ON \
   -DGGML_HIP_MMQ_MFMA=ON \
   -DGGML_HIP_GRAPHS=ON \
-  -DCMAKE_BUILD_TYPE=Release
-cmake --build . --config Release -j$(nproc) --target llama-server
+  -DGGML_CUDA_FA=ON \
+  -DGGML_CUDA_FA_ALL_QUANTS=ON \
+  -DGGML_CUDA_GRAPHS=ON \
+  -DGGML_CUDA=OFF \
+  -DBUILD_SHARED_LIBS=ON
+cmake --build . --config Release -j$(nproc) --target llama-cli llama-server
 ```
 
 ## Upstream agent code & commit standards
@@ -136,6 +146,7 @@ n_ctx = read_metadata("context_length", 1024);
 | WMMA flag | `ggml/src/ggml-hip/CMakeLists.txt` | `-DRDNA4` for `AMD_WMMA_AVAILABLE` |
 | FA iq4_nl | `ggml/src/ggml-cuda/fattn.cu` | `case GGML_TYPE_IQ4_NL:` |
 | stream-k | `mmq.cu` + `mmq.cuh` | Enable stream-k scheduling on RDNA4 |
+| RDNA4 MMQ decode guard | `ggml/src/ggml-cuda/mmq.cu` | `ggml_cuda_should_use_mmq()` returns `false` for gfx1201 by default (routes M=1 decode to hipBLAS; the int-WMMA MMQ decode path produces empty/garbage tokens on gfx1201). `GGML_CUDA_RDNA4_FORCE_MMQ=1` re-enables the (still-buggy) WMMA path for testing. Do NOT "fix" by disabling WMMA globally. |
 | PlanarQuant KV | ~18 files | Givens rotation 3-bit KV cache compression |
 
 ---
@@ -184,3 +195,46 @@ All 4 planar/iso KV types work with `--flash-attn off` + f16 V. Throughput ~44-5
 - **No TOP_K sampler op** on gfx1201. Always omit `--top-k` in `llama-server` / `llama-cli`.
 - **AMDGPU workqueue hogging**: `svm_range_deferred_list_work [amdgpu]` can cause kernel panics under sustained GPU load. Kernel suggests switching to `WQ_UNBOUND`.
 - **Symmetric quantized V** (q4_0+q4_0 etc.) requires FlashAttention (`V cache quantization requires flash_attn`).
+
+---
+
+## Operational traps (verified 2026-07-15 — do NOT re-introduce)
+
+These two have each cost hours of silent failure. They are load-bearing.
+
+### 1. FA VEC build: NEVER add `fattn-vec-instance-*.cu` to the build
+All (K,V) VEC pair instantiations are generated from the **`KV_PAIRS` list** in
+`ggml/src/ggml-cuda/fattn-vec.cuh` (inline `EMIT_VEC_EXTERN` definitions + `fattn.cu`
+`KV_PAIRS(EMIT_VEC_DISPATCH)` dispatch). The standalone
+`template-instances/fattn-vec-instance-*.cu` files are **intentionally excluded** from
+`ggml/src/ggml-hip/CMakeLists.txt`. They `#include "fattn-vec.cuh"` and re-emit the same
+symbols -> **`duplicate explicit instantiation of ggml_cuda_flash_attn_ext_vec_case<...>`**.
+Adding a new KV type = ONE line in `KV_PAIRS`. Do not recreate those `.cu` files.
+
+### 2. `llama-cli` ALWAYS needs `-st` (--single-turn) in scripts/batch
+`llama-cli` defaults to an **interactive REPL** after generation; `/dev/null` on stdin
+does NOT reliably make it exit (it answers then loops, hanging `$()` capture and
+background runs silently). Pair every `-p "..."` with **`-st`** so it exits after one
+turn (`Exiting...`). Also: never trust `cmd | tail` for pass/fail — pipe exit = `tail`,
+masks `make` failures; capture the real exit via `echo $? | tee file`.
+Verified: 13-case Paris matrix (f16 + planar3/iso3/planar4/iso4 same-type and mixed K/V)
+passed with `-st` on the `-50 mV / 1325 MHz` profile.
+
+### 3. GPU profile (survives heavy compile)
+Persisted safe profile: **-50 mV core + 1325 MHz MCLK + 221 W power cap** (sysfs
+`power1_cap`; `rocm-smi --setpoweroverdrive` lies). The prior -180 mV / 1490 MHz profile
+caused a VRAM-corruption hard freeze under `GGML_CUDA_FA_ALL_QUANTS` HIP compile load.
+OD writes require `perf=manual` on gfx1201 (not `low`).
+
+---
+
+## Wiki / skill references (current)
+
+- **Wiki** `guides/rx9070xt-undervolt-mclk-tuning` — verified -50/1325 profile + 2026-07-15 freeze incident.
+- **Wiki** `entities/amd-rx-9070-xt-rocm` — current GPU/ROCm state.
+- **Wiki** `projects/rdna4-llamacpp-fork-build` — RDNA4 llama.cpp Fork Build & Porting Guide.
+- **Skill** `mlops/planar-iso-fa-integration` — KV type additions (KV_PAIRS mechanism, `-st` testing).
+- **Skill** `mlops/rocm-rdna4-kernel-optimization` — WMMA/MMQ + gfx1201 decode-guard notes.
+- **Skill** `mlops/llama-cpp-new-kv-type` — add a new KV cache quant type to llama.cpp for HIP.
+- **Skill** `mlops/gputune-rdna4-9070xt` + `mlops/amd-gpu-undervolt-tuning` — GPU undervolt/mclk tuning.
+
