@@ -168,6 +168,7 @@ Derived Hermes skill for future KV type additions:
 - Commits pushed directly to `master` (private fork, no reviews)
 - One logical change per commit
 - Commit messages: concise, no unicode (ASCII only)
+- **NEVER push to or open a PR against `upstream` (ggml-org/llama.cpp, the repo we forked from).** We only ever push to `origin` (our fork, Kunii/llama.cpp-rdna4). Upstream PRs / `gh pr create` are forbidden for this project under any circumstances.
 
 ---
 
@@ -218,22 +219,47 @@ background runs silently). Pair every `-p "..."` with **`-st`** so it exits afte
 turn (`Exiting...`). Also: never trust `cmd | tail` for pass/fail — pipe exit = `tail`,
 masks `make` failures; capture the real exit via `echo $? | tee file`.
 Verified: 13-case Paris matrix (f16 + planar3/iso3/planar4/iso4 same-type and mixed K/V)
-passed with `-st` on the `-50 mV / 1325 MHz` profile.
+passed with `-st` on the 9070 XT (gfx1201). Re-verify after any build-flag or
+kernel change; the matrix is the regression gate for the FA VEC kernels.
 
-### 3. GPU profile (survives heavy compile)
-Persisted safe profile: **-50 mV core + 1325 MHz MCLK + 221 W power cap** (sysfs
-`power1_cap`; `rocm-smi --setpoweroverdrive` lies). The prior -180 mV / 1490 MHz profile
-caused a VRAM-corruption hard freeze under `GGML_CUDA_FA_ALL_QUANTS` HIP compile load.
-OD writes require `perf=manual` on gfx1201 (not `low`).
+### 3. GPU profile (current: STOCK)
+
+Both GPUs are currently at **stock** settings (reset 2026-07-15 after crash
+investigation; `gpu-powersave.service` is **disabled** so nothing re-applies
+UV/OC at boot):
+
+- 9070 XT (gfx1201): `OD_VDDGFX_OFFSET 0mV`, `OD_MCLK 1259MHz` (stock),
+  `perf auto`, `power1_cap 317W` (factory default).
+- 6700 XT (gfx1031): stock (its OD table is read-only under this kernel/ROCm).
+
+**History (NOT current):** earlier a `-50 mV / 1325 MHz / 221 W` profile was
+used and survived heavy HIP compiles; the `-180 mV / 1490 MHz` profile caused
+VRAM corruption under `GGML_CUDA_FA_ALL_QUANTS` load. UV was later *exonerated*
+as a crash cause (hard-freezes occurred at both -50 mV and -20 mV). Re-applying
+any undervolt is a deliberate future choice, not the standing state.
 
 ### 4. Multi-GPU: ALWAYS pin device 0 (the 9070 XT / gfx1201)
 This box has 2 AMD GPUs: **device 0 = RX 9070 XT (gfx1201, the build target)**,
-device 1 = RX 6700 XT (gfx1031). Builds compile ONLY gfx1201 code objects. If you run
-llama.cpp without pinning, it **auto-selects device 1** (6700 XT) →
+device 1 = RX 6700 XT (gfx1031). Builds compile ONLY gfx1201 code objects. If you
+run llama.cpp without pinning, it **auto-selects device 1** (6700 XT) →
 `ROCm error: invalid kernel file` at `ggml_cuda_kernel_launch` → SIGABRT (exit 134).
 **Always `export HIP_VISIBLE_DEVICES=0` (+ `CUDA_VISIBLE_DEVICES=0`)** or pass `--device 0`
-before any llama.cpp run. The 2026-07-15 post-merge test "crash" was this, NOT a build
-regression — re-pin and it passes (230M @ 604 t/s, 9B @ 83 t/s).
+before any llama.cpp run.
+
+**Tier 1 hide is now PERMANENT** (2026-07-15): `HIP_VISIBLE_DEVICES=0 ROCR_VISIBLE_DEVICES=0
+CUDA_VISIBLE_DEVICES=0` are set system-wide in `/etc/environment` AND in the systemd
+`DefaultEnvironment` drop-in (`/etc/systemd/system.conf.d/10-rocm-hide.conf`), so the
+6700 XT is invisible to every HIP/ROCm app (and to builds) without per-command exports.
+Displays on the 6700 XT stay live (env hide does not unbind the driver).
+
+**2026-07-15 build crashes — what is actually proven:** during the post-merge build,
+repeated hard-freezes occurred. After (a) resetting GPUs to stock, (b) making the
+Tier-1 6700-XT hide permanent, and (c) deleting 33 freeze-corrupted `.o` files, the
+`-j16` build completed cleanly (`REAL_EXIT=0`). The narrowly-proven statement is that
+the build **completes** under stock GPUs + Tier-1 hide + clean object tree. Stock GPU
+profile is a **likely contributing factor** in the earlier freezes, not a proven sole
+cause — parallelism (`-j16`) and the ROCm/6700-XT touch during build were also in play.
+Do not assert "OC caused the crash" without that caveat.
 
 ---
 
