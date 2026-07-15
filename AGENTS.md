@@ -226,7 +226,14 @@ Persisted safe profile: **-50 mV core + 1325 MHz MCLK + 221 W power cap** (sysfs
 caused a VRAM-corruption hard freeze under `GGML_CUDA_FA_ALL_QUANTS` HIP compile load.
 OD writes require `perf=manual` on gfx1201 (not `low`).
 
----
+### 4. Multi-GPU: ALWAYS pin device 0 (the 9070 XT / gfx1201)
+This box has 2 AMD GPUs: **device 0 = RX 9070 XT (gfx1201, the build target)**,
+device 1 = RX 6700 XT (gfx1031). Builds compile ONLY gfx1201 code objects. If you run
+llama.cpp without pinning, it **auto-selects device 1** (6700 XT) →
+`ROCm error: invalid kernel file` at `ggml_cuda_kernel_launch` → SIGABRT (exit 134).
+**Always `export HIP_VISIBLE_DEVICES=0` (+ `CUDA_VISIBLE_DEVICES=0`)** or pass `--device 0`
+before any llama.cpp run. The 2026-07-15 post-merge test "crash" was this, NOT a build
+regression — re-pin and it passes (230M @ 604 t/s, 9B @ 83 t/s).
 
 ---
 
