@@ -200,6 +200,56 @@ static int ggml_cuda_parse_id(char devName[]) {
     archNum += archMinor;
     return archNum;
 }
+
+// --- Build-target (HIP/ROCm) device-mismatch guard -------------------------
+// When llama.cpp is built for specific AMDGPU_TARGETS (e.g. gfx1201), running on
+// a GPU outside that set yields a cryptic "invalid kernel file" SIGABRT at kernel
+// launch. We instead detect the mismatch at init and fail with a clear message.
+
+// Returns a human-readable copy of the build's AMDGPU_TARGETS list, or a fallback.
+static std::string ggml_cuda_build_targets_string() {
+#ifdef GGML_HIP_BUILD_TARGETS
+    return GGML_HIP_BUILD_TARGETS;
+#else
+    return "(any)";
+#endif
+}
+
+// True if the device's gcnArchName (e.g. "gfx1201") is among the build's AMDGPU_TARGETS.
+// Compared against the authoritative arch string rather than re-decoding cc, because
+// ggml's cc encoding (GGML_CUDA_CC_OFFSET_AMD + ...) does not round-trip cleanly through
+// a simple (cc>>8)&0xff shift.
+static bool ggml_cuda_device_matches_build(const char * gcnArchName) {
+#ifdef GGML_HIP_BUILD_TARGETS
+    if (gcnArchName == nullptr || gcnArchName[0] == '\0') {
+        return false;
+    }
+    // gcnArchName may be "gfx1201" or "gfx1201:xnack-:..." — keep only up to ':'.
+    std::string arch(gcnArchName);
+    size_t colon = arch.find(':');
+    if (colon != std::string::npos) {
+        arch = arch.substr(0, colon);
+    }
+    const std::string targets = GGML_HIP_BUILD_TARGETS;
+    size_t pos = 0;
+    while (pos < targets.size()) {
+        size_t end = targets.find_first_of(", ;", pos);
+        std::string tok = (end == std::string::npos) ? targets.substr(pos)
+                                                     : targets.substr(pos, end - pos);
+        if (tok == arch) {
+            return true;
+        }
+        if (end == std::string::npos) {
+            break;
+        }
+        pos = end + 1;
+    }
+    return false;
+#else
+    (void)gcnArchName;
+    return true;  // no build-target constraint known -> accept
+#endif
+}
 #endif // defined(GGML_USE_HIP)
 
 static ggml_cuda_device_info ggml_cuda_init() {
@@ -274,6 +324,15 @@ static ggml_cuda_device_info ggml_cuda_init() {
                 info.devices[id].cc += prop.minor * 0x10;
             }
         }
+
+        // Build-target mismatch guard: if this build was compiled for specific
+        // AMDGPU_TARGETS and this device is not among them, mark it unusable so
+        // we never hit the cryptic "invalid kernel file" SIGABRT at launch.
+        if (!ggml_cuda_device_matches_build(prop.gcnArchName)) {
+            GGML_LOG_WARN("  Device %d (%s, %s) does NOT match this build's AMDGPU target(s): %s — skipping.\n",
+                          id, prop.name, prop.gcnArchName, ggml_cuda_build_targets_string().c_str());
+            info.devices[id].cc = 0;
+        }
         GGML_LOG_INFO("  Device %d: %s, %s (0x%x), VMM: %s, Wave Size: %d, VRAM: %zu MiB\n",
                       id, prop.name, prop.gcnArchName, info.devices[id].cc & 0xffff,
                       device_vmm ? "yes" : "no", prop.warpSize,
@@ -313,6 +372,30 @@ static ggml_cuda_device_info ggml_cuda_init() {
 
 #endif  // defined(GGML_USE_HIP)
     }
+
+#if defined(GGML_USE_HIP)
+    // Build-target mismatch: if every enumerated device was rejected above
+    // (none match AMDGPU_TARGETS), fail clearly instead of aborting later with
+    // "invalid kernel file" at the first kernel launch.
+    {
+        int usable = 0;
+        for (int id = 0; id < info.device_count; ++id) {
+            if (info.devices[id].cc != 0) {
+                usable++;
+            }
+        }
+        if (info.device_count > 0 && usable == 0) {
+            const std::string tgt = ggml_cuda_build_targets_string();
+            GGML_LOG_ERROR("%s: Device mismatch: this build is only for AMDGPU target(s): %s\n",
+                           __func__, tgt.c_str());
+            GGML_LOG_ERROR("%s: no visible GPU matches. Rebuild with the correct AMDGPU_TARGETS,\n",
+                           __func__);
+            GGML_LOG_ERROR("%s: or export HIP_VISIBLE_DEVICES to a matching device.\n", __func__);
+            info.device_count = 0;
+            return info;
+        }
+    }
+#endif // defined(GGML_USE_HIP)
 
     if (ggml_cuda_highest_compiled_arch(GGML_CUDA_CC_TURING) >= GGML_CUDA_CC_TURING && !turing_devices_without_mma.empty()) {
         GGML_LOG_INFO("The following devices will have suboptimal performance due to a lack of tensor cores:\n");
@@ -5203,6 +5286,11 @@ ggml_backend_reg_t ggml_backend_cuda_reg() {
             const int min_batch_size = getenv("GGML_OP_OFFLOAD_MIN_BATCH") ? atoi(getenv("GGML_OP_OFFLOAD_MIN_BATCH")) : 32;
 
             for (int i = 0; i < ggml_cuda_info().device_count; i++) {
+                // Skip devices rejected by the build-target mismatch guard
+                // (cc == 0) so they are never handed to a kernel launch.
+                if (ggml_cuda_info().devices[i].cc == 0) {
+                    continue;
+                }
                 ggml_backend_cuda_device_context * dev_ctx = new ggml_backend_cuda_device_context;
                 dev_ctx->device = i;
                 dev_ctx->name = GGML_CUDA_NAME + std::to_string(i);

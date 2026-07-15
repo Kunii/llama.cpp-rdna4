@@ -91,6 +91,13 @@ endif()
 
 add_compile_definitions(GGML_USE_HIP)
 
+# Expose the build's AMDGPU_TARGETS to the runtime so it can reject device
+# mismatch early (e.g. a gfx1031 GPU with a gfx1201-only build) with a clear
+# error instead of a cryptic "invalid kernel file" SIGABRT at launch.
+if (AMDGPU_TARGETS)
+    add_compile_definitions(GGML_HIP_BUILD_TARGETS="${AMDGPU_TARGETS}")
+endif()
+
 if (GGML_CUDA_FORCE_MMQ)
     add_compile_definitions(GGML_CUDA_FORCE_MMQ)
 endif()
